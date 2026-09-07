@@ -1,0 +1,25 @@
+# Python / Byte-compiled
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+
+# Project-specific secrets / generated keys
+*.pem
+*.key
