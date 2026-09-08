@@ -9,6 +9,16 @@ OP_CREATE_LOBBY = 1
 OP_JOIN_LOBBY = 2
 OP_LOBBY_RESPONSE = 3
 OP_CHAT_MSG = 4
+# user controll
+OP_REGISTER     = 5
+OP_LOGIN        = 6
+OP_LEADERBOARD  = 7
+OP_AUTH_RES     = 8
+# Opcodes קיימים: OP_DH_HANDSHAKE=0, OP_CREATE_LOBBY=1, OP_JOIN_LOBBY=2...
+OP_PLAYER_MOVE  = 10  # הלקוח שולח בקשת תנועה (Up/Down/Left/Right)
+OP_PLAYER_SLAM  = 11  # הלקוח שולח בקשת תקיפה (Direction)
+OP_GAME_STATE   = 20  # השרת משדר את מצב הלוח והשחקנים לכולם
+OP_START_GAME   = 21  # השרת מודיע על תחילת משחק
 OP_ERROR = 99
 
 
