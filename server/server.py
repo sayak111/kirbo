@@ -1,12 +1,14 @@
+import json
 import socket
 import threading
 import struct
-import json
+import time
 import uuid
 
+from lib import db_manager
 from lib import protocol
 from lib import security
-from lib import db_manager
+from server.game import Game
 
 
 class Lobby:
@@ -14,15 +16,82 @@ class Lobby:
         self.lobby_id = lobby_id
         self.clients = {}
         self.lock = threading.Lock()
+        self.game = None
+        self.match_started = False
+        self.match_thread = None
+        self.client_ids = {}
 
     def add_client(self, client_socket, cipher):
         with self.lock:
+            if client_socket in self.clients:
+                return True
+            if len(self.clients) >= 4:
+                return False
             self.clients[client_socket] = cipher
+            return True
 
     def remove_client(self, client_socket):
         with self.lock:
             if client_socket in self.clients:
                 del self.clients[client_socket]
+
+            player_id = self.client_ids.pop(client_socket, None)
+            if player_id and self.game is not None:
+                self.game.remove_player(player_id)
+
+    def _ensure_game(self):
+        if self.game is None:
+            self.game = Game()
+
+    def _assign_players(self):
+        self._ensure_game()
+        ordered_clients = list(self.clients.keys())[:4]
+        corners = self.game.engine.spawn_points[:len(ordered_clients)]
+
+        for idx, client_socket in enumerate(ordered_clients):
+            player_id = f"p{idx + 1}"
+            self.client_ids[client_socket] = player_id
+            start_r, start_c = corners[idx]
+            self.game.add_player(player_id, start_r, start_c)
+
+    def start_match(self):
+        self._assign_players()
+
+        if not self.match_started:
+            self.match_started = True
+            self.match_thread = threading.Thread(target=self._run_match_loop, daemon=True)
+            self.match_thread.start()
+
+        self.broadcast_match_start()
+        self.broadcast_game_state()
+
+    def _run_match_loop(self):
+        while self.clients:
+            if self.game is not None:
+                self.game.tick()
+                self.broadcast_game_state()
+            time.sleep(0.5)
+
+    def broadcast_match_start(self):
+        payload = b"Match started!"
+        with self.lock:
+            for client, cipher in list(self.clients.items()):
+                try:
+                    protocol.send_msg(client, protocol.OP_MATCH_START, payload, cipher=cipher)
+                except Exception:
+                    self.remove_client(client)
+
+    def broadcast_game_state(self):
+        if self.game is None:
+            return
+
+        payload = json.dumps(self.game.serialize_state()).encode('utf-8')
+        with self.lock:
+            for client, cipher in list(self.clients.items()):
+                try:
+                    protocol.send_msg(client, protocol.OP_GAME_STATE, payload, cipher=cipher)
+                except Exception:
+                    self.remove_client(client)
 
     def broadcast(self, opcode: int, payload_bytes: bytes, sender_socket=None):
         with self.lock:
@@ -105,7 +174,10 @@ def handle_client(client_sock, client_addr, server_dh_params):
             elif opcode == protocol.OP_CREATE_LOBBY:
                 lobby_id = str(uuid.uuid4())[:6].upper()
                 new_lobby = Lobby(lobby_id)
-                new_lobby.add_client(client_sock, cipher)
+                if not new_lobby.add_client(client_sock, cipher):
+                    protocol.send_msg(client_sock, protocol.OP_ERROR, b"Lobby is full!", cipher=cipher)
+                    client_sock.close()
+                    return
 
                 with LOBBIES_LOCK:
                     LOBBIES[lobby_id] = new_lobby
@@ -114,6 +186,7 @@ def handle_client(client_sock, client_addr, server_dh_params):
                 print(f"[LOBBY CREATED] ID: {lobby_id} by {client_addr}")
                 res_payload = f"CREATED:{lobby_id}".encode('utf-8')
                 protocol.send_msg(client_sock, protocol.OP_LOBBY_RESPONSE, res_payload, cipher=cipher)
+                current_lobby.start_match()
 
             elif opcode == protocol.OP_JOIN_LOBBY:
                 target_id = payload.decode('utf-8').strip().upper()
@@ -121,12 +194,16 @@ def handle_client(client_sock, client_addr, server_dh_params):
                     target_lobby = LOBBIES.get(target_id)
 
                 if target_lobby:
-                    target_lobby.add_client(client_sock, cipher)
+                    if not target_lobby.add_client(client_sock, cipher):
+                        protocol.send_msg(client_sock, protocol.OP_ERROR, b"Lobby is full!", cipher=cipher)
+                        continue
+
                     current_lobby = target_lobby
                     print(f"[LOBBY JOIN] {client_addr} joined lobby #{target_id}")
                     res_payload = f"JOINED:{target_id}".encode('utf-8')
                     protocol.send_msg(client_sock, protocol.OP_LOBBY_RESPONSE, res_payload, cipher=cipher)
                     current_lobby.broadcast(protocol.OP_CHAT_MSG, b"A new player joined the room!", sender_socket=client_sock)
+                    current_lobby.start_match()
                 else:
                     protocol.send_msg(client_sock, protocol.OP_ERROR, b"Lobby not found!", cipher=cipher)
 
@@ -139,6 +216,9 @@ def handle_client(client_sock, client_addr, server_dh_params):
     finally:
         if current_lobby:
             current_lobby.remove_client(client_sock)
+            if not current_lobby.clients:
+                with LOBBIES_LOCK:
+                    LOBBIES.pop(current_lobby.lobby_id, None)
         client_sock.close()
 
 

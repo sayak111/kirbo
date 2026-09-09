@@ -16,6 +16,8 @@ OP_CREATE_LOBBY    = 5
 OP_JOIN_LOBBY      = 6
 OP_LOBBY_RESPONSE  = 7
 OP_CHAT_MSG        = 8
+OP_MATCH_START      = 9
+OP_GAME_STATE      = 10
 OP_ERROR           = 99
 
 # Legacy / Alternative Aliases

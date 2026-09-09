@@ -110,6 +110,16 @@ class GameClient:
                 elif opcode == protocol.OP_CHAT_MSG:
                     self._emit("chat_message", {"message": payload.decode("utf-8", errors="ignore")})
 
+                elif opcode == protocol.OP_MATCH_START:
+                    self._emit("match_started", {"message": payload.decode("utf-8", errors="ignore")})
+
+                elif opcode == protocol.OP_GAME_STATE:
+                    try:
+                        data = json.loads(payload.decode("utf-8"))
+                    except Exception:
+                        data = {"message": payload.decode("utf-8", errors="ignore")}
+                    self._emit("game_state", data)
+
                 elif opcode == protocol.OP_ERROR:
                     self._emit("error", {"message": payload.decode("utf-8", errors="ignore")})
 
