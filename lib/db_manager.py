@@ -4,6 +4,7 @@ import os
 
 DB_FILE = "game_database.db"
 
+
 def init_db():
     """יוצר את טבלאות מסד הנתונים במידה ואינן קיימות"""
     with sqlite3.connect(DB_FILE) as conn:
@@ -33,11 +34,11 @@ def hash_password(password: str, salt: bytes = None) -> tuple[bytes, bytes]:
     """מבצע Hashing + Salting לסיסמה (PBKDF2 HMAC SHA256)"""
     if not salt:
         salt = os.urandom(16)
-    
+
     pwd_hash = hashlib.pbkdf2_hmac(
-        'sha256', 
-        password.encode('utf-8'), 
-        salt, 
+        'sha256',
+        password.encode('utf-8'),
+        salt,
         100000
     )
     return pwd_hash, salt
@@ -95,14 +96,14 @@ def update_user_stats(username: str, won: bool, score_delta: int):
         cursor = conn.cursor()
         if won:
             cursor.execute("""
-                UPDATE users 
-                SET score = score + ?, wins = wins + 1 
+                UPDATE users
+                SET score = score + ?, wins = wins + 1
                 WHERE username = ?
             """, (score_delta, username))
         else:
             cursor.execute("""
-                UPDATE users 
-                SET score = MAX(0, score - ?), losses = losses + 1 
+                UPDATE users
+                SET score = MAX(0, score - ?), losses = losses + 1
                 WHERE username = ?
             """, (score_delta, username))
 
@@ -112,9 +113,9 @@ def get_leaderboard(limit=10) -> list[tuple]:
     with sqlite3.connect(DB_FILE) as conn:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT username, score, wins, losses 
-            FROM users 
-            ORDER BY score DESC 
+            SELECT username, score, wins, losses
+            FROM users
+            ORDER BY score DESC
             LIMIT ?
         """, (limit,))
         return cursor.fetchall()

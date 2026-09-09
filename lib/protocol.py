@@ -1,6 +1,6 @@
 import struct
 
-# Header Structure: 2 bytes (Unsigned Short) Opcode, 4 bytes (Unsigned Int) Length
+# Header Structure: 2 bytes (Unsigned Short) Opcode, 4 bytes (Unsigned Int) Length[cite: 3, 4]
 HEADER_FORMAT = "!HI"
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 
@@ -14,16 +14,17 @@ OP_LOGIN           = 3
 OP_LOGIN_RESP      = 4
 OP_CREATE_LOBBY    = 5
 OP_JOIN_LOBBY      = 6
-OP_LOBBY_RESP      = 7
+OP_LOBBY_RESPONSE  = 7
 OP_CHAT_MSG        = 8
 OP_ERROR           = 99
 
-# Alias to prevent AttributeError if legacy code calls OP_AUTH_RES
+# Legacy / Alternative Aliases
 OP_AUTH_RES        = OP_LOGIN_RESP
+OP_LOBBY_RESP      = OP_LOBBY_RESPONSE
 
 
 def send_msg(sock, opcode: int, payload_bytes: bytes, cipher=None):
-    """Encrypts (if cipher provided) and sends header + payload over network socket."""
+    """Encrypts payload (if cipher provided) and sends header + payload over network socket."""
     if cipher and opcode != OP_DH_HANDSHAKE:
         payload_bytes = cipher.encrypt(payload_bytes)
 
@@ -56,7 +57,6 @@ def recv_msg(sock, cipher=None):
         if payload is None:
             return None, None
 
-    # Decrypt encrypted payloads (skip during initial DH exchange)
     if cipher and opcode != OP_DH_HANDSHAKE:
         try:
             payload = cipher.decrypt(payload)
