@@ -76,7 +76,7 @@ class GameEngine:
     def remove_player(self, player_id):
         self.players.pop(player_id, None)
 
-    def move_player(self, player_id, direction):
+    def move_player(self, player_id, direction=None, dx=None, dy=None):
         p = self.players.get(player_id)
         if not p or not p["is_alive"]:
             return
@@ -85,14 +85,18 @@ class GameEngine:
         x = p.get("x", float(p["c"] * 44 + 6))
         y = p.get("y", float(p["r"] * 44 + 6))
 
-        if direction == "UP":
-            y -= step
-        elif direction == "DOWN":
-            y += step
-        elif direction == "LEFT":
-            x -= step
-        elif direction == "RIGHT":
-            x += step
+        if direction is not None:
+            if direction == "UP":
+                y -= step
+            elif direction == "DOWN":
+                y += step
+            elif direction == "LEFT":
+                x -= step
+            elif direction == "RIGHT":
+                x += step
+        else:
+            x += float(dx or 0.0)
+            y += float(dy or 0.0)
 
         max_x = (self.board.cols * 44) - 32
         max_y = (self.board.rows * 44) - 32
@@ -142,8 +146,8 @@ class Game:
     def remove_player(self, player_id):
         self.engine.remove_player(player_id)
 
-    def move_player(self, player_id, direction):
-        self.engine.move_player(player_id, direction)
+    def move_player(self, player_id, direction=None, dx=None, dy=None):
+        self.engine.move_player(player_id, direction=direction, dx=dx, dy=dy)
 
     def handle_slam(self, player_id, direction):
         self.engine.handle_slam(player_id, direction)

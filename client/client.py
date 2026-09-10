@@ -172,10 +172,19 @@ class GameClient:
             raise RuntimeError("Client is not connected.")
         protocol.send_msg(self.sock, protocol.OP_START_MATCH, b"start", cipher=self.cipher)
 
-    def move_player(self, direction):
+    def move_player(self, direction=None, dx=None, dy=None):
         if not self.connected:
             raise RuntimeError("Client is not connected.")
-        protocol.send_msg(self.sock, protocol.OP_MOVE_PLAYER, direction.encode("utf-8"), cipher=self.cipher)
+
+        if direction is not None:
+            payload = direction.encode("utf-8")
+        else:
+            payload = json.dumps({
+                "dx": float(dx or 0.0),
+                "dy": float(dy or 0.0),
+            }).encode("utf-8")
+
+        protocol.send_msg(self.sock, protocol.OP_MOVE_PLAYER, payload, cipher=self.cipher)
 
     def send_chat(self, message):
         if not self.connected:

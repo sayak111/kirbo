@@ -271,8 +271,13 @@ def handle_client(client_sock, client_addr, server_dh_params):
                 if not player_id:
                     continue
 
-                direction = payload.decode("utf-8", errors="ignore").upper()
-                current_lobby.game.move_player(player_id, direction)
+                try:
+                    data = json.loads(payload.decode("utf-8", errors="ignore"))
+                    current_lobby.game.move_player(player_id, dx=data.get("dx", 0.0), dy=data.get("dy", 0.0))
+                except Exception:
+                    direction = payload.decode("utf-8", errors="ignore").upper()
+                    current_lobby.game.move_player(player_id, direction=direction)
+
                 current_lobby.broadcast_game_state()
 
             elif opcode == protocol.OP_CHAT_MSG:

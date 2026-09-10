@@ -131,8 +131,14 @@ def update_demo_player(dt):
     if move_x or move_y:
         speed = 170
         magnitude = (move_x ** 2 + move_y ** 2) ** 0.5
-        player["x"] += (move_x / magnitude) * speed * dt
-        player["y"] += (move_y / magnitude) * speed * dt
+        dx = (move_x / magnitude) * speed * dt
+        dy = (move_y / magnitude) * speed * dt
+
+        player["x"] += dx
+        player["y"] += dy
+
+        if client and client.connected:
+            client.move_player(dx=dx, dy=dy)
 
     player_size = tile_size - 12
     player["x"] = max(0, min(player["x"], (cols * tile_size) - player_size))
@@ -309,14 +315,7 @@ def main():
                     elif event.key not in (pygame.K_RETURN, pygame.K_TAB):
                         input_lobby_text += event.unicode.upper()
                 elif current_state == STATE_GAME:
-                    if event.key in (pygame.K_UP, pygame.K_w):
-                        client.move_player("UP")
-                    elif event.key in (pygame.K_DOWN, pygame.K_s):
-                        client.move_player("DOWN")
-                    elif event.key in (pygame.K_LEFT, pygame.K_a):
-                        client.move_player("LEFT")
-                    elif event.key in (pygame.K_RIGHT, pygame.K_d):
-                        client.move_player("RIGHT")
+                    pass
 
         if current_state == STATE_GAME:
             update_demo_player(dt)
