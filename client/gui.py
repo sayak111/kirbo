@@ -137,6 +137,15 @@ def update_demo_player(dt):
         player["x"] += dx
         player["y"] += dy
 
+        if move_x > 0:
+            player["facing"] = "RIGHT"
+        elif move_x < 0:
+            player["facing"] = "LEFT"
+        elif move_y > 0:
+            player["facing"] = "DOWN"
+        elif move_y < 0:
+            player["facing"] = "UP"
+
         if client and client.connected:
             client.move_player(dx=dx, dy=dy)
 
@@ -315,7 +324,13 @@ def main():
                     elif event.key not in (pygame.K_RETURN, pygame.K_TAB):
                         input_lobby_text += event.unicode.upper()
                 elif current_state == STATE_GAME:
-                    pass
+                    if event.key == pygame.K_SPACE:
+                        player = game_state.get("players", {}).get(local_player_id) if local_player_id else None
+                        if not isinstance(player, dict):
+                            player = next(iter(game_state.get("players", {}).values()), None) if game_state and game_state.get("players") else None
+                        if isinstance(player, dict):
+                            facing = player.get("facing", "RIGHT")
+                            client.move_player(action="slam", facing=facing)
 
         if current_state == STATE_GAME:
             update_demo_player(dt)

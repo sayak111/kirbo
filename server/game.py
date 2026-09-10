@@ -19,6 +19,7 @@ class GameBoard:
         self.cols = cols
         self.grid = [[TILE_NORMAL for _ in range(cols)] for _ in range(rows)]
         self.pending_falling_tiles = []
+        self.pending_respawn_tiles = []
 
     def trigger_slam(self, row, col, direction):
         """Apply a slam effect to a row or column based on direction."""
@@ -31,19 +32,34 @@ class GameBoard:
         now = time.time()
         for r, c in target_tiles:
             self.grid[r][c] = TILE_WARNING
-            self.pending_falling_tiles.append({"pos": (r, c), "fall_at": now + 1.5})
+            self.pending_falling_tiles.append({
+                "pos": (r, c),
+                "fall_at": now + 1.5,
+                "respawn_at": now + 3.5,
+            })
 
     def update_timers(self):
-        """Update tiles whose timer has expired and turn them into empty tiles."""
+        """Update tiles whose timer has expired, then respawn them after the delay."""
         now = time.time()
-        remaining = []
+
+        remaining_falling = []
         for item in self.pending_falling_tiles:
             r, c = item["pos"]
             if now >= item["fall_at"]:
                 self.grid[r][c] = TILE_EMPTY
+                self.pending_respawn_tiles.append(item)
             else:
-                remaining.append(item)
-        self.pending_falling_tiles = remaining
+                remaining_falling.append(item)
+        self.pending_falling_tiles = remaining_falling
+
+        remaining_respawn = []
+        for item in self.pending_respawn_tiles:
+            r, c = item["pos"]
+            if now >= item["respawn_at"]:
+                self.grid[r][c] = TILE_NORMAL
+            else:
+                remaining_respawn.append(item)
+        self.pending_respawn_tiles = remaining_respawn
 
 
 class GameEngine:
@@ -71,6 +87,7 @@ class GameEngine:
             "lives": 3,
             "is_alive": True,
             "color": PLAYER_COLORS[color_index],
+            "facing": "RIGHT",
         }
 
     def remove_player(self, player_id):
@@ -88,15 +105,27 @@ class GameEngine:
         if direction is not None:
             if direction == "UP":
                 y -= step
+                p["facing"] = "UP"
             elif direction == "DOWN":
                 y += step
+                p["facing"] = "DOWN"
             elif direction == "LEFT":
                 x -= step
+                p["facing"] = "LEFT"
             elif direction == "RIGHT":
                 x += step
+                p["facing"] = "RIGHT"
         else:
             x += float(dx or 0.0)
             y += float(dy or 0.0)
+            if dx > 0:
+                p["facing"] = "RIGHT"
+            elif dx < 0:
+                p["facing"] = "LEFT"
+            elif dy > 0:
+                p["facing"] = "DOWN"
+            elif dy < 0:
+                p["facing"] = "UP"
 
         max_x = (self.board.cols * 44) - 32
         max_y = (self.board.rows * 44) - 32
@@ -110,6 +139,12 @@ class GameEngine:
         p = self.players.get(player_id)
         if p and p["is_alive"]:
             self.board.trigger_slam(p["r"], p["c"], direction)
+
+    def get_winner(self):
+        alive_players = [player_id for player_id, player in self.players.items() if player.get("is_alive", False)]
+        if len(alive_players) == 1:
+            return alive_players[0]
+        return None
 
     def tick(self):
         """Runs on a fixed tick: update timers and check collisions / player falls."""
@@ -133,6 +168,7 @@ class GameEngine:
         return {
             "grid": self.board.grid,
             "players": self.players,
+            "winner": self.get_winner(),
         }
 
 
@@ -157,3 +193,6 @@ class Game:
 
     def serialize_state(self):
         return self.engine.serialize_state()
+
+    def get_winner(self):
+        return self.engine.get_winner()

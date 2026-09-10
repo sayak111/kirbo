@@ -273,7 +273,10 @@ def handle_client(client_sock, client_addr, server_dh_params):
 
                 try:
                     data = json.loads(payload.decode("utf-8", errors="ignore"))
-                    current_lobby.game.move_player(player_id, dx=data.get("dx", 0.0), dy=data.get("dy", 0.0))
+                    if isinstance(data, dict) and data.get("action") == "slam":
+                        current_lobby.game.handle_slam(player_id, data.get("facing", "RIGHT"))
+                    else:
+                        current_lobby.game.move_player(player_id, dx=data.get("dx", 0.0), dy=data.get("dy", 0.0))
                 except Exception:
                     direction = payload.decode("utf-8", errors="ignore").upper()
                     current_lobby.game.move_player(player_id, direction=direction)
