@@ -1,5 +1,12 @@
 import time
 
+PLAYER_COLORS = [
+    (96, 165, 250),
+    (34, 197, 94),
+    (251, 146, 60),
+    (244, 114, 182),
+]
+
 # Tile states
 TILE_NORMAL = 0
 TILE_WARNING = 1
@@ -53,7 +60,18 @@ class GameEngine:
         self.spawn_points = self.spawn_points[:4]
 
     def add_player(self, player_id, start_r, start_c):
-        self.players[player_id] = {"r": start_r, "c": start_c, "lives": 3, "is_alive": True}
+        color_index = len(self.players) % len(PLAYER_COLORS)
+        start_x = start_c * 44 + 6
+        start_y = start_r * 44 + 6
+        self.players[player_id] = {
+            "r": start_r,
+            "c": start_c,
+            "x": float(start_x),
+            "y": float(start_y),
+            "lives": 3,
+            "is_alive": True,
+            "color": PLAYER_COLORS[color_index],
+        }
 
     def remove_player(self, player_id):
         self.players.pop(player_id, None)
@@ -63,18 +81,26 @@ class GameEngine:
         if not p or not p["is_alive"]:
             return
 
-        new_r, new_c = p["r"], p["c"]
-        if direction == "UP" and p["r"] > 0:
-            new_r -= 1
-        elif direction == "DOWN" and p["r"] < self.board.rows - 1:
-            new_r += 1
-        elif direction == "LEFT" and p["c"] > 0:
-            new_c -= 1
-        elif direction == "RIGHT" and p["c"] < self.board.cols - 1:
-            new_c += 1
+        step = 12
+        x = p.get("x", float(p["c"] * 44 + 6))
+        y = p.get("y", float(p["r"] * 44 + 6))
 
-        if self.board.grid[new_r][new_c] != TILE_EMPTY:
-            p["r"], p["c"] = new_r, new_c
+        if direction == "UP":
+            y -= step
+        elif direction == "DOWN":
+            y += step
+        elif direction == "LEFT":
+            x -= step
+        elif direction == "RIGHT":
+            x += step
+
+        max_x = (self.board.cols * 44) - 32
+        max_y = (self.board.rows * 44) - 32
+
+        p["x"] = max(0, min(x, max_x))
+        p["y"] = max(0, min(y, max_y))
+        p["r"] = int(p["y"] // 44)
+        p["c"] = int(p["x"] // 44)
 
     def handle_slam(self, player_id, direction):
         p = self.players.get(player_id)
@@ -95,6 +121,8 @@ class GameEngine:
                     p["is_alive"] = False
                 else:
                     p["r"], p["c"] = self.board.rows // 2, self.board.cols // 2
+                    p["x"] = float(p["c"] * 44 + 6)
+                    p["y"] = float(p["r"] * 44 + 6)
 
     def serialize_state(self):
         """Pack the current state into a small network-friendly structure."""
@@ -110,6 +138,9 @@ class Game:
 
     def add_player(self, player_id, start_r, start_c):
         self.engine.add_player(player_id, start_r, start_c)
+
+    def remove_player(self, player_id):
+        self.engine.remove_player(player_id)
 
     def move_player(self, player_id, direction):
         self.engine.move_player(player_id, direction)

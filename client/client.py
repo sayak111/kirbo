@@ -22,6 +22,7 @@ class GameClient:
         self.user_data = {}
         self.current_lobby_id = None
         self.is_host = False
+        self.player_id = None
 
     def _default_event_handler(self, event, payload):
         print(f"[client:{event}] {payload}")
@@ -94,16 +95,20 @@ class GameClient:
                 elif opcode == protocol.OP_LOBBY_RESPONSE:
                     msg = payload.decode("utf-8", errors="ignore")
                     if ":" in msg:
-                        action, lobby_id = msg.split(":", 1)
-                        self.current_lobby_id = lobby_id
+                        action, remainder = msg.split(":", 1)
+                        parts = remainder.split(":")
+                        self.current_lobby_id = parts[0]
                         self.is_host = action == "CREATED"
+                        self.player_id = parts[1] if len(parts) > 1 else None
                     else:
                         self.current_lobby_id = msg
                         self.is_host = False
+                        self.player_id = None
 
                     self._emit("lobby_response", {
                         "lobby_id": self.current_lobby_id,
                         "is_host": self.is_host,
+                        "player_id": self.player_id,
                         "message": msg,
                     })
 
@@ -161,6 +166,16 @@ class GameClient:
             raise RuntimeError("Client is not connected.")
         payload = lobby_id.strip().upper().encode("utf-8")
         protocol.send_msg(self.sock, protocol.OP_JOIN_LOBBY, payload, cipher=self.cipher)
+
+    def start_match(self):
+        if not self.connected:
+            raise RuntimeError("Client is not connected.")
+        protocol.send_msg(self.sock, protocol.OP_START_MATCH, b"start", cipher=self.cipher)
+
+    def move_player(self, direction):
+        if not self.connected:
+            raise RuntimeError("Client is not connected.")
+        protocol.send_msg(self.sock, protocol.OP_MOVE_PLAYER, direction.encode("utf-8"), cipher=self.cipher)
 
     def send_chat(self, message):
         if not self.connected:

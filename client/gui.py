@@ -33,6 +33,8 @@ is_host = False
 game_state = None
 client = None
 game_renderer = None
+local_player_id = None
+countdown_text = None
 
 input_user_text = ""
 input_pass_text = ""
@@ -48,10 +50,11 @@ rect_btn_submit = pygame.Rect(280, 360, 240, 45)
 rect_btn_create_lobby = pygame.Rect(60, 230, 280, 45)
 rect_lobby_input = pygame.Rect(60, 330, 280, 40)
 rect_btn_join_lobby = pygame.Rect(60, 385, 280, 45)
+rect_btn_start_game = pygame.Rect(420, 245, 230, 45)
 
 
 def on_client_event(event, payload):
-    global current_state, status_msg, user_data, current_lobby_id, is_host, game_state
+    global current_state, status_msg, user_data, current_lobby_id, is_host, game_state, local_player_id, countdown_text
 
     if event == "connected":
         status_msg = "Connected securely!"
@@ -71,10 +74,16 @@ def on_client_event(event, payload):
     elif event == "lobby_response":
         current_lobby_id = payload.get("lobby_id")
         is_host = payload.get("is_host", False)
+        local_player_id = payload.get("player_id")
         status_msg = payload.get("message", f"In Room #{current_lobby_id}")
 
     elif event == "chat_message":
         status_msg = f"Room Event: {payload.get('message', '')}"
+
+    elif event == "match_started":
+        countdown_text = payload.get("message", "GO")
+        status_msg = payload.get("message", "Match starting...")
+        current_state = STATE_GAME
 
     elif event == "game_state":
         game_state = payload
@@ -85,6 +94,49 @@ def on_client_event(event, payload):
 
     elif event == "disconnected":
         status_msg = payload.get("message", "Disconnected.")
+
+
+def update_demo_player(dt):
+    global game_state, local_player_id
+
+    if not game_state or not isinstance(game_state.get("players", {}), dict):
+        return
+
+    players = game_state.get("players", {})
+    if not players:
+        return
+
+    target_player_id = local_player_id if local_player_id and local_player_id in players else next(iter(players.keys()))
+    player = players.get(target_player_id)
+    if not isinstance(player, dict):
+        return
+
+    grid = game_state.get("grid", [])
+    if not grid:
+        return
+
+    tile_size = 44
+    rows = len(grid)
+    cols = len(grid[0]) if rows else 0
+
+    if "x" not in player:
+        player["x"] = float(player.get("c", 0) * tile_size + 6)
+    if "y" not in player:
+        player["y"] = float(player.get("r", 0) * tile_size + 6)
+
+    keys = pygame.key.get_pressed()
+    move_x = (keys[pygame.K_RIGHT] or keys[pygame.K_d]) - (keys[pygame.K_LEFT] or keys[pygame.K_a])
+    move_y = (keys[pygame.K_DOWN] or keys[pygame.K_s]) - (keys[pygame.K_UP] or keys[pygame.K_w])
+
+    if move_x or move_y:
+        speed = 170
+        magnitude = (move_x ** 2 + move_y ** 2) ** 0.5
+        player["x"] += (move_x / magnitude) * speed * dt
+        player["y"] += (move_y / magnitude) * speed * dt
+
+    player_size = tile_size - 12
+    player["x"] = max(0, min(player["x"], (cols * tile_size) - player_size))
+    player["y"] = max(0, min(player["y"], (rows * tile_size) - player_size))
 
 
 def draw_ui(screen, font_title, font_body, font_sm):
@@ -156,8 +208,17 @@ def draw_ui(screen, font_title, font_body, font_sm):
             screen.blit(font_sm.render(role_str, True, COLOR_ACCENT), (420, 165))
             screen.blit(font_body.render("Status: Waiting for players...", True, COLOR_SUCCESS), (420, 210))
 
+            if is_host:
+                pygame.draw.rect(screen, COLOR_ACCENT, rect_btn_start_game, border_radius=6)
+                lbl_start = font_body.render("START GAME", True, COLOR_TEXT)
+                screen.blit(lbl_start, lbl_start.get_rect(center=rect_btn_start_game.center))
+
     elif current_state == STATE_GAME:
         game_renderer.draw(screen, game_state, font_title, font_body, font_sm)
+
+        if countdown_text:
+            overlay = font_title.render(countdown_text, True, COLOR_TEXT)
+            screen.blit(overlay, overlay.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2)))
 
     lbl_status = font_sm.render(f"Status: {status_msg}", True, COLOR_TEXT_MUTED)
     screen.blit(lbl_status, (20, WINDOW_HEIGHT - 30))
@@ -183,7 +244,7 @@ def main():
     client.connect()
 
     while running:
-        clock.tick(60)
+        dt = clock.tick(60) / 1000.0
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -226,6 +287,10 @@ def main():
                         status_msg = f"Joining lobby #{input_lobby_text.strip().upper()}..."
                         client.join_lobby(input_lobby_text)
 
+                    elif rect_btn_start_game.collidepoint(pos) and client.connected and is_host:
+                        status_msg = "Starting match..."
+                        client.start_match()
+
             elif event.type == pygame.KEYDOWN:
                 if current_state == STATE_AUTH:
                     if active_input == "user":
@@ -243,6 +308,18 @@ def main():
                         input_lobby_text = input_lobby_text[:-1]
                     elif event.key not in (pygame.K_RETURN, pygame.K_TAB):
                         input_lobby_text += event.unicode.upper()
+                elif current_state == STATE_GAME:
+                    if event.key in (pygame.K_UP, pygame.K_w):
+                        client.move_player("UP")
+                    elif event.key in (pygame.K_DOWN, pygame.K_s):
+                        client.move_player("DOWN")
+                    elif event.key in (pygame.K_LEFT, pygame.K_a):
+                        client.move_player("LEFT")
+                    elif event.key in (pygame.K_RIGHT, pygame.K_d):
+                        client.move_player("RIGHT")
+
+        if current_state == STATE_GAME:
+            update_demo_player(dt)
 
         draw_ui(screen, font_title, font_body, font_sm)
 

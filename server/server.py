@@ -20,6 +20,7 @@ class Lobby:
         self.match_started = False
         self.match_thread = None
         self.client_ids = {}
+        self.host_socket = None
 
     def add_client(self, client_socket, cipher):
         with self.lock:
@@ -28,6 +29,16 @@ class Lobby:
             if len(self.clients) >= 4:
                 return False
             self.clients[client_socket] = cipher
+
+            if client_socket not in self.client_ids:
+                for player_num in range(1, 5):
+                    player_id = f"p{player_num}"
+                    if player_id not in self.client_ids.values():
+                        self.client_ids[client_socket] = player_id
+                        break
+
+            if self.host_socket is None:
+                self.host_socket = client_socket
             return True
 
     def remove_client(self, client_socket):
@@ -39,6 +50,11 @@ class Lobby:
             if player_id and self.game is not None:
                 self.game.remove_player(player_id)
 
+            if self.host_socket == client_socket and self.clients:
+                self.host_socket = next(iter(self.clients.keys()))
+            elif self.host_socket == client_socket:
+                self.host_socket = None
+
     def _ensure_game(self):
         if self.game is None:
             self.game = Game()
@@ -49,20 +65,47 @@ class Lobby:
         corners = self.game.engine.spawn_points[:len(ordered_clients)]
 
         for idx, client_socket in enumerate(ordered_clients):
-            player_id = f"p{idx + 1}"
+            player_id = self.client_ids.get(client_socket, f"p{idx + 1}")
             self.client_ids[client_socket] = player_id
             start_r, start_c = corners[idx]
             self.game.add_player(player_id, start_r, start_c)
 
+    def can_start(self, client_socket):
+        with self.lock:
+            return (
+                self.host_socket == client_socket
+                and not self.match_started
+                and len(self.clients) >= 2
+            )
+
+    def request_start(self, client_socket):
+        if not self.can_start(client_socket):
+            return False
+
+        self.start_match()
+        return True
+
     def start_match(self):
+        if self.match_started:
+            return True
+
+        if len(self.clients) < 2:
+            return False
+
         self._assign_players()
+        self.match_started = True
 
-        if not self.match_started:
-            self.match_started = True
-            self.match_thread = threading.Thread(target=self._run_match_loop, daemon=True)
-            self.match_thread.start()
+        self.countdown_thread = threading.Thread(target=self._run_countdown, daemon=True)
+        self.countdown_thread.start()
+        return True
 
-        self.broadcast_match_start()
+    def _run_countdown(self):
+        for value in (3, 2, 1, "GO"):
+            self.broadcast_match_start(str(value))
+            time.sleep(1)
+
+        self.match_thread = threading.Thread(target=self._run_match_loop, daemon=True)
+        self.match_thread.start()
         self.broadcast_game_state()
 
     def _run_match_loop(self):
@@ -72,8 +115,8 @@ class Lobby:
                 self.broadcast_game_state()
             time.sleep(0.5)
 
-    def broadcast_match_start(self):
-        payload = b"Match started!"
+    def broadcast_match_start(self, payload_text="Match started!"):
+        payload = payload_text.encode("utf-8")
         with self.lock:
             for client, cipher in list(self.clients.items()):
                 try:
@@ -184,9 +227,9 @@ def handle_client(client_sock, client_addr, server_dh_params):
 
                 current_lobby = new_lobby
                 print(f"[LOBBY CREATED] ID: {lobby_id} by {client_addr}")
-                res_payload = f"CREATED:{lobby_id}".encode('utf-8')
+                player_id = new_lobby.client_ids.get(client_sock, "p1")
+                res_payload = f"CREATED:{lobby_id}:{player_id}".encode('utf-8')
                 protocol.send_msg(client_sock, protocol.OP_LOBBY_RESPONSE, res_payload, cipher=cipher)
-                current_lobby.start_match()
 
             elif opcode == protocol.OP_JOIN_LOBBY:
                 target_id = payload.decode('utf-8').strip().upper()
@@ -200,12 +243,37 @@ def handle_client(client_sock, client_addr, server_dh_params):
 
                     current_lobby = target_lobby
                     print(f"[LOBBY JOIN] {client_addr} joined lobby #{target_id}")
-                    res_payload = f"JOINED:{target_id}".encode('utf-8')
+                    player_id = target_lobby.client_ids.get(client_sock, "p1")
+                    res_payload = f"JOINED:{target_id}:{player_id}".encode('utf-8')
                     protocol.send_msg(client_sock, protocol.OP_LOBBY_RESPONSE, res_payload, cipher=cipher)
                     current_lobby.broadcast(protocol.OP_CHAT_MSG, b"A new player joined the room!", sender_socket=client_sock)
-                    current_lobby.start_match()
                 else:
                     protocol.send_msg(client_sock, protocol.OP_ERROR, b"Lobby not found!", cipher=cipher)
+
+            elif opcode == protocol.OP_START_MATCH:
+                if not current_lobby:
+                    protocol.send_msg(client_sock, protocol.OP_ERROR, b"You are not in a lobby.", cipher=cipher)
+                    continue
+
+                if not current_lobby.request_start(client_sock):
+                    protocol.send_msg(
+                        client_sock,
+                        protocol.OP_ERROR,
+                        b"At least 2 players are required before the host can start the game.",
+                        cipher=cipher
+                    )
+
+            elif opcode == protocol.OP_MOVE_PLAYER:
+                if not current_lobby or not current_lobby.game:
+                    continue
+
+                player_id = current_lobby.client_ids.get(client_sock)
+                if not player_id:
+                    continue
+
+                direction = payload.decode("utf-8", errors="ignore").upper()
+                current_lobby.game.move_player(player_id, direction)
+                current_lobby.broadcast_game_state()
 
             elif opcode == protocol.OP_CHAT_MSG:
                 if current_lobby:

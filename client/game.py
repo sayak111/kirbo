@@ -15,6 +15,12 @@ class ClientGameRenderer:
             "text": (244, 244, 245),
             "muted": (161, 161, 170),
         }
+        self.player_palette = [
+            (96, 165, 250),
+            (34, 197, 94),
+            (251, 146, 60),
+            (244, 114, 182),
+        ]
 
     def draw(self, screen, game_state, font_title, font_body, font_sm):
         screen.fill(self.colors["bg"])
@@ -59,7 +65,10 @@ class ClientGameRenderer:
                 pygame.draw.rect(screen, color, rect, border_radius=6)
                 pygame.draw.rect(screen, (63, 63, 70), rect, 1, border_radius=6)
 
-        for player_id, player in players.items():
+        bar_y = board_start_y - 34
+        max_lives = 3
+
+        for player_index, (player_id, player) in enumerate(players.items()):
             if not isinstance(player, dict):
                 continue
 
@@ -67,21 +76,29 @@ class ClientGameRenderer:
             c = player.get("c", 0)
             is_alive = player.get("is_alive", True)
             lives = player.get("lives", 0)
+            player_color = player.get("color") or self.player_palette[player_index % len(self.player_palette)]
 
-            x = board_start_x + c * self.tile_size + 6
-            y = board_start_y + r * self.tile_size + 6
+            local_x = player.get("x", c * self.tile_size + 6)
+            local_y = player.get("y", r * self.tile_size + 6)
+            x = board_start_x + local_x
+            y = board_start_y + local_y
             size = self.tile_size - 12
             rect = pygame.Rect(x, y, size, size)
 
-            color = self.colors["player"] if is_alive else (239, 68, 68)
+            color = player_color if is_alive else (239, 68, 68)
             pygame.draw.ellipse(screen, color, rect)
             pygame.draw.ellipse(screen, self.colors["player_outline"], rect, 2)
 
             label = font_sm.render(f"{player_id}", True, self.colors["text"])
             screen.blit(label, (x, y - 18))
 
-            lives_label = font_sm.render(f"Lives: {lives}", True, self.colors["text"])
-            screen.blit(lives_label, (x, y + size + 4))
+            bar_rect = pygame.Rect(board_start_x, bar_y + player_index * 16, board_width, 10)
+            pygame.draw.rect(screen, (63, 63, 70), bar_rect, border_radius=6)
+            fill_width = max(0, min(board_width, int((lives / max_lives) * board_width)))
+            pygame.draw.rect(screen, player_color if is_alive else (239, 68, 68), pygame.Rect(bar_rect.x, bar_rect.y, fill_width, bar_rect.height), border_radius=6)
+
+            bar_label = font_sm.render(f"{player_id}", True, self.colors["text"])
+            screen.blit(bar_label, (bar_rect.x, bar_rect.y - 14))
 
         title = font_title.render("Match in Progress", True, self.colors["text"])
         screen.blit(title, (board_start_x, 25))

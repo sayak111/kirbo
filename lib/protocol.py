@@ -18,6 +18,8 @@ OP_LOBBY_RESPONSE  = 7
 OP_CHAT_MSG        = 8
 OP_MATCH_START      = 9
 OP_GAME_STATE      = 10
+OP_START_MATCH      = 11
+OP_MOVE_PLAYER      = 12
 OP_ERROR           = 99
 
 # Legacy / Alternative Aliases
