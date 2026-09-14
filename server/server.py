@@ -20,9 +20,10 @@ class Lobby:
         self.match_started = False
         self.match_thread = None
         self.client_ids = {}
+        self.client_usernames = {}
         self.host_socket = None
 
-    def add_client(self, client_socket, cipher):
+    def add_client(self, client_socket, cipher, username=None):
         with self.lock:
             if client_socket in self.clients:
                 return True
@@ -37,6 +38,9 @@ class Lobby:
                         self.client_ids[client_socket] = player_id
                         break
 
+            if username:
+                self.client_usernames[client_socket] = username
+
             if self.host_socket is None:
                 self.host_socket = client_socket
             return True
@@ -46,6 +50,8 @@ class Lobby:
             if client_socket in self.clients:
                 del self.clients[client_socket]
 
+            self.client_usernames.pop(client_socket, None)
+
             player_id = self.client_ids.pop(client_socket, None)
             if player_id and self.game is not None:
                 self.game.remove_player(player_id)
@@ -54,6 +60,11 @@ class Lobby:
                 self.host_socket = next(iter(self.clients.keys()))
             elif self.host_socket == client_socket:
                 self.host_socket = None
+
+            if not self.clients:
+                self.game = None
+                self.match_started = False
+                self.match_thread = None
 
     def _ensure_game(self):
         if self.game is None:
@@ -113,7 +124,61 @@ class Lobby:
             if self.game is not None:
                 self.game.tick()
                 self.broadcast_game_state()
+
+                alive_players = [
+                    player_id for player_id, player in self.game.engine.players.items()
+                    if player.get("is_alive", False)
+                ]
+
+                if len(alive_players) <= 1:
+                    self._finish_match(alive_players[0] if alive_players else None)
+                    break
+
             time.sleep(0.5)
+
+    def _finish_match(self, winner_player_id=None):
+        if self.game is None:
+            return
+
+        results = []
+        winner_username = None
+
+        for client_socket, cipher in list(self.clients.items()):
+            player_id = self.client_ids.get(client_socket)
+            username = self.client_usernames.get(client_socket)
+            won = player_id == winner_player_id
+            if won and not winner_username:
+                winner_username = username or player_id
+
+            if username:
+                db_manager.update_user_stats(username, won, 50)
+
+            results.append({
+                "player_id": player_id,
+                "username": username or player_id,
+                "won": won,
+                "score_delta": 50 if won else -50,
+            })
+
+        payload = {
+            "winner_player_id": winner_player_id,
+            "winner_username": winner_username,
+            "results": results,
+            "message": f"{winner_username} wins!" if winner_username else "Match ended — no survivors.",
+        }
+
+        self.match_started = False
+        self.game = None
+        self.match_thread = None
+
+        payload_bytes = json.dumps(payload).encode("utf-8")
+        client_sockets = list(self.clients.keys())
+
+        for client in client_sockets:
+            try:
+                protocol.send_msg(client, protocol.OP_MATCH_END, payload_bytes, cipher=self.clients.get(client))
+            except Exception:
+                self.remove_client(client)
 
     def broadcast_match_start(self, payload_text="Match started!"):
         payload = payload_text.encode("utf-8")
@@ -154,6 +219,7 @@ def handle_client(client_sock, client_addr, server_dh_params):
     print(f"[NEW CONNECTION] Connected from {client_addr}")
     cipher = None
     current_lobby = None
+    client_username = None
 
     try:
         dh_session = security.DHHandshake(parameters=server_dh_params)
@@ -201,6 +267,7 @@ def handle_client(client_sock, client_addr, server_dh_params):
 
                 success, user_info_or_msg = db_manager.authenticate_user(username, password)
                 if success:
+                    client_username = username
                     res_payload = json.dumps({
                         "success": True,
                         "message": "Login successful!",
@@ -217,7 +284,7 @@ def handle_client(client_sock, client_addr, server_dh_params):
             elif opcode == protocol.OP_CREATE_LOBBY:
                 lobby_id = str(uuid.uuid4())[:6].upper()
                 new_lobby = Lobby(lobby_id)
-                if not new_lobby.add_client(client_sock, cipher):
+                if not new_lobby.add_client(client_sock, cipher, username=client_username):
                     protocol.send_msg(client_sock, protocol.OP_ERROR, b"Lobby is full!", cipher=cipher)
                     client_sock.close()
                     return
@@ -237,7 +304,7 @@ def handle_client(client_sock, client_addr, server_dh_params):
                     target_lobby = LOBBIES.get(target_id)
 
                 if target_lobby:
-                    if not target_lobby.add_client(client_sock, cipher):
+                    if not target_lobby.add_client(client_sock, cipher, username=client_username):
                         protocol.send_msg(client_sock, protocol.OP_ERROR, b"Lobby is full!", cipher=cipher)
                         continue
 

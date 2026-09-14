@@ -84,7 +84,7 @@ class GameEngine:
             "c": start_c,
             "x": float(start_x),
             "y": float(start_y),
-            "lives": 3,
+            "lives": 5,
             "is_alive": True,
             "color": PLAYER_COLORS[color_index],
             "facing": "RIGHT",

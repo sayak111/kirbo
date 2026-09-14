@@ -35,6 +35,9 @@ client = None
 game_renderer = None
 local_player_id = None
 countdown_text = None
+countdown_until = 0
+result_banner_text = None
+result_banner_until = 0
 
 input_user_text = ""
 input_pass_text = ""
@@ -54,7 +57,7 @@ rect_btn_start_game = pygame.Rect(420, 245, 230, 45)
 
 
 def on_client_event(event, payload):
-    global current_state, status_msg, user_data, current_lobby_id, is_host, game_state, local_player_id, countdown_text
+    global current_state, status_msg, user_data, current_lobby_id, is_host, game_state, local_player_id, countdown_text, countdown_until, result_banner_text, result_banner_until
 
     if event == "connected":
         status_msg = "Connected securely!"
@@ -82,8 +85,31 @@ def on_client_event(event, payload):
 
     elif event == "match_started":
         countdown_text = payload.get("message", "GO")
+        countdown_until = pygame.time.get_ticks() + 900
         status_msg = payload.get("message", "Match starting...")
         current_state = STATE_GAME
+
+    elif event == "match_end":
+        countdown_text = None
+        countdown_until = 0
+        game_state = None
+        current_state = STATE_LOBBY
+
+        results = payload.get("results", []) if isinstance(payload, dict) else []
+        player_result = None
+        for result in results:
+            if result.get("player_id") == local_player_id:
+                player_result = result
+                break
+        if player_result is None and user_data.get("username"):
+            for result in results:
+                if result.get("username") == user_data.get("username"):
+                    player_result = result
+                    break
+
+        result_banner_text = "YOU WON!" if player_result and player_result.get("won") else "YOU LOST!"
+        result_banner_until = pygame.time.get_ticks() + 1600
+        status_msg = payload.get("message", "Match ended.")
 
     elif event == "game_state":
         game_state = payload
@@ -235,6 +261,10 @@ def draw_ui(screen, font_title, font_body, font_sm):
             overlay = font_title.render(countdown_text, True, COLOR_TEXT)
             screen.blit(overlay, overlay.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2)))
 
+    if result_banner_text and pygame.time.get_ticks() < result_banner_until:
+        banner = font_title.render(result_banner_text, True, COLOR_SUCCESS if result_banner_text == "YOU WON!" else COLOR_TEXT)
+        screen.blit(banner, banner.get_rect(center=(WINDOW_WIDTH // 2, 70)))
+
     lbl_status = font_sm.render(f"Status: {status_msg}", True, COLOR_TEXT_MUTED)
     screen.blit(lbl_status, (20, WINDOW_HEIGHT - 30))
 
@@ -243,7 +273,7 @@ def draw_ui(screen, font_title, font_body, font_sm):
 
 def main():
     global running, auth_mode, active_input, input_user_text, input_pass_text, input_lobby_text, status_msg
-    global client, game_renderer
+    global client, game_renderer, countdown_text, countdown_until, result_banner_text, result_banner_until
 
     pygame.init()
     screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
@@ -260,6 +290,15 @@ def main():
 
     while running:
         dt = clock.tick(60) / 1000.0
+        now_ms = pygame.time.get_ticks()
+
+        if countdown_text and now_ms >= countdown_until:
+            countdown_text = None
+            countdown_until = 0
+
+        if result_banner_text and now_ms >= result_banner_until:
+            result_banner_text = None
+            result_banner_until = 0
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:

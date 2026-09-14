@@ -118,6 +118,10 @@ class GameClient:
                 elif opcode == protocol.OP_MATCH_START:
                     self._emit("match_started", {"message": payload.decode("utf-8", errors="ignore")})
 
+                elif opcode == protocol.OP_MATCH_END:
+                    data = self._safe_json_load(payload)
+                    self._emit("match_end", data)
+
                 elif opcode == protocol.OP_GAME_STATE:
                     try:
                         data = json.loads(payload.decode("utf-8"))
