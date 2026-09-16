@@ -84,7 +84,8 @@ class GameEngine:
             "c": start_c,
             "x": float(start_x),
             "y": float(start_y),
-            "lives": 5,
+            "lives": 3,
+            "invulnerable_until": 0.0,
             "is_alive": True,
             "color": PLAYER_COLORS[color_index],
             "facing": "RIGHT",
@@ -149,12 +150,16 @@ class GameEngine:
     def tick(self):
         """Runs on a fixed tick: update timers and check collisions / player falls."""
         self.board.update_timers()
+        now = time.time()
 
         for p_id, p in self.players.items():
             if not p["is_alive"]:
                 continue
 
             if self.board.grid[p["r"]][p["c"]] == TILE_EMPTY:
+                if now < p.get("invulnerable_until", 0.0):
+                    continue
+
                 p["lives"] -= 1
                 if p["lives"] <= 0:
                     p["is_alive"] = False
@@ -162,6 +167,7 @@ class GameEngine:
                     p["r"], p["c"] = self.board.rows // 2, self.board.cols // 2
                     p["x"] = float(p["c"] * 44 + 6)
                     p["y"] = float(p["r"] * 44 + 6)
+                    p["invulnerable_until"] = now + 2.0
 
     def serialize_state(self):
         """Pack the current state into a small network-friendly structure."""

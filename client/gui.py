@@ -220,6 +220,14 @@ def draw_ui(screen, font_title, font_body, font_sm):
 
         screen.blit(font_title.render("Matchmaking", True, COLOR_TEXT), (60, 120))
 
+        screen.blit(font_sm.render("Your Stats", True, COLOR_TEXT_MUTED), (60, 158))
+        score = user_data.get("score", 0)
+        wins = user_data.get("wins", 0)
+        losses = user_data.get("losses", 0)
+        screen.blit(font_sm.render(f"Score: {score}", True, COLOR_TEXT), (60, 180))
+        screen.blit(font_sm.render(f"Wins: {wins}", True, COLOR_TEXT), (160, 180))
+        screen.blit(font_sm.render(f"Losses: {losses}", True, COLOR_TEXT), (245, 180))
+
         screen.blit(font_sm.render("Host a new game:", True, COLOR_TEXT_MUTED), (60, 205))
         pygame.draw.rect(screen, COLOR_ACCENT, rect_btn_create_lobby, border_radius=6)
         lbl_create = font_body.render("+ CREATE LOBBY", True, COLOR_TEXT)
