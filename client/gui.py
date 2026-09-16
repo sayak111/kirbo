@@ -1,35 +1,33 @@
 import pygame
 
 from client.client import GameClient
-from client.game import ClientGameRenderer
+from client.game_renderer import ClientGameRenderer
+from client.game_screen import draw as draw_game, update_player
+from client.lobby_screen import (
+    MODE_LOGIN,
+    MODE_REGISTER,
+    STATE_AUTH,
+    STATE_LOBBY,
+    draw as draw_lobby,
+    rect_btn_create_lobby,
+    rect_btn_join_lobby,
+    rect_btn_start_game,
+    rect_btn_submit,
+    rect_lobby_input,
+    rect_pass_input,
+    rect_tab_login,
+    rect_tab_reg,
+    rect_user_input,
+)
 
-WINDOW_WIDTH = 800
-WINDOW_HEIGHT = 600
-
-COLOR_BG = (24, 24, 27)
-COLOR_CARD = (39, 39, 42)
-COLOR_BORDER = (63, 63, 70)
-COLOR_TEXT = (244, 244, 245)
-COLOR_TEXT_MUTED = (161, 161, 170)
-COLOR_ACCENT = (99, 102, 241)
-COLOR_INPUT_BG = (24, 24, 27)
-COLOR_SUCCESS = (34, 197, 94)
-
-MODE_LOGIN = "LOGIN"
-MODE_REGISTER = "REGISTER"
-STATE_AUTH = "AUTH"
-STATE_LOBBY = "LOBBY"
 STATE_GAME = "GAME"
-
 running = True
 current_state = STATE_AUTH
 auth_mode = MODE_LOGIN
 status_msg = "Connecting to server..."
-
 user_data = {}
 current_lobby_id = None
 is_host = False
-
 game_state = None
 client = None
 game_renderer = None
@@ -38,33 +36,21 @@ countdown_text = None
 countdown_until = 0
 result_banner_text = None
 result_banner_until = 0
-
 input_user_text = ""
 input_pass_text = ""
 input_lobby_text = ""
 active_input = None
 
-rect_tab_login = pygame.Rect(280, 140, 100, 30)
-rect_tab_reg = pygame.Rect(420, 140, 100, 30)
-rect_user_input = pygame.Rect(280, 220, 240, 40)
-rect_pass_input = pygame.Rect(280, 290, 240, 40)
-rect_btn_submit = pygame.Rect(280, 360, 240, 45)
-
-rect_btn_create_lobby = pygame.Rect(60, 230, 280, 45)
-rect_lobby_input = pygame.Rect(60, 330, 280, 40)
-rect_btn_join_lobby = pygame.Rect(60, 385, 280, 45)
-rect_btn_start_game = pygame.Rect(420, 245, 230, 45)
-
 
 def on_client_event(event, payload):
-    global current_state, status_msg, user_data, current_lobby_id, is_host, game_state, local_player_id, countdown_text, countdown_until, result_banner_text, result_banner_until
+    global current_state, status_msg, user_data, current_lobby_id, is_host
+    global game_state, local_player_id, countdown_text, countdown_until
+    global result_banner_text, result_banner_until
 
     if event == "connected":
         status_msg = "Connected securely!"
-
     elif event == "register_response":
         status_msg = payload.get("message", "Registration response received.")
-
     elif event == "login_response":
         data = payload or {}
         if data.get("success"):
@@ -73,224 +59,133 @@ def on_client_event(event, payload):
             current_state = STATE_LOBBY
         else:
             status_msg = data.get("message", "Login failed!")
-
     elif event == "lobby_response":
         current_lobby_id = payload.get("lobby_id")
         is_host = payload.get("is_host", False)
         local_player_id = payload.get("player_id")
         status_msg = payload.get("message", f"In Room #{current_lobby_id}")
-
     elif event == "chat_message":
         status_msg = f"Room Event: {payload.get('message', '')}"
-
     elif event == "match_started":
         countdown_text = payload.get("message", "GO")
         countdown_until = pygame.time.get_ticks() + 900
         status_msg = payload.get("message", "Match starting...")
         current_state = STATE_GAME
-
     elif event == "match_end":
         countdown_text = None
         countdown_until = 0
         game_state = None
         current_state = STATE_LOBBY
-
         results = payload.get("results", []) if isinstance(payload, dict) else []
-        player_result = None
-        for result in results:
-            if result.get("player_id") == local_player_id:
-                player_result = result
-                break
+        player_result = next((item for item in results if item.get("player_id") == local_player_id), None)
         if player_result is None and user_data.get("username"):
-            for result in results:
-                if result.get("username") == user_data.get("username"):
-                    player_result = result
-                    break
-
+            player_result = next(
+                (item for item in results if item.get("username") == user_data["username"]),
+                None,
+            )
         result_banner_text = "YOU WON!" if player_result and player_result.get("won") else "YOU LOST!"
         result_banner_until = pygame.time.get_ticks() + 1600
         status_msg = payload.get("message", "Match ended.")
-
     elif event == "game_state":
         game_state = payload
         current_state = STATE_GAME
-
     elif event == "error":
         status_msg = payload.get("message", "An error occurred.")
-
     elif event == "disconnected":
         status_msg = payload.get("message", "Disconnected.")
 
 
-def update_demo_player(dt):
-    global game_state, local_player_id
-
-    if not game_state or not isinstance(game_state.get("players", {}), dict):
-        return
-
-    players = game_state.get("players", {})
-    if not players:
-        return
-
-    target_player_id = local_player_id if local_player_id and local_player_id in players else next(iter(players.keys()))
-    player = players.get(target_player_id)
-    if not isinstance(player, dict):
-        return
-
-    grid = game_state.get("grid", [])
-    if not grid:
-        return
-
-    tile_size = 44
-    rows = len(grid)
-    cols = len(grid[0]) if rows else 0
-
-    if "x" not in player:
-        player["x"] = float(player.get("c", 0) * tile_size + 6)
-    if "y" not in player:
-        player["y"] = float(player.get("r", 0) * tile_size + 6)
-
-    keys = pygame.key.get_pressed()
-    move_x = (keys[pygame.K_RIGHT] or keys[pygame.K_d]) - (keys[pygame.K_LEFT] or keys[pygame.K_a])
-    move_y = (keys[pygame.K_DOWN] or keys[pygame.K_s]) - (keys[pygame.K_UP] or keys[pygame.K_w])
-
-    if move_x or move_y:
-        speed = 170
-        magnitude = (move_x ** 2 + move_y ** 2) ** 0.5
-        dx = (move_x / magnitude) * speed * dt
-        dy = (move_y / magnitude) * speed * dt
-
-        player["x"] += dx
-        player["y"] += dy
-
-        if move_x > 0:
-            player["facing"] = "RIGHT"
-        elif move_x < 0:
-            player["facing"] = "LEFT"
-        elif move_y > 0:
-            player["facing"] = "DOWN"
-        elif move_y < 0:
-            player["facing"] = "UP"
-
-        if client and client.connected:
-            client.move_player(dx=dx, dy=dy)
-
-    player_size = tile_size - 12
-    player["x"] = max(0, min(player["x"], (cols * tile_size) - player_size))
-    player["y"] = max(0, min(player["y"], (rows * tile_size) - player_size))
+def _screen_state():
+    return {
+        "screen": current_state,
+        "auth_mode": auth_mode,
+        "status_msg": status_msg,
+        "user_data": user_data,
+        "current_lobby_id": current_lobby_id,
+        "is_host": is_host,
+        "active_input": active_input,
+        "input_user_text": input_user_text,
+        "input_pass_text": input_pass_text,
+        "input_lobby_text": input_lobby_text,
+        "result_banner_text": result_banner_text,
+        "result_banner_until": result_banner_until,
+    }
 
 
-def draw_ui(screen, font_title, font_body, font_sm):
-    screen.fill(COLOR_BG)
+def _handle_mouse(pos):
+    global auth_mode, active_input, status_msg
 
     if current_state == STATE_AUTH:
-        card_rect = pygame.Rect(230, 90, 340, 380)
-        pygame.draw.rect(screen, COLOR_CARD, card_rect, border_radius=12)
-        pygame.draw.rect(screen, COLOR_BORDER, card_rect, 1, border_radius=12)
-
-        color_login = COLOR_ACCENT if auth_mode == MODE_LOGIN else COLOR_TEXT_MUTED
-        color_reg = COLOR_ACCENT if auth_mode == MODE_REGISTER else COLOR_TEXT_MUTED
-        screen.blit(font_title.render("Sign In", True, color_login), rect_tab_login)
-        screen.blit(font_title.render("Register", True, color_reg), rect_tab_reg)
-
-        bg_user = COLOR_BORDER if active_input == "user" else COLOR_INPUT_BG
-        pygame.draw.rect(screen, bg_user, rect_user_input, border_radius=6)
-        pygame.draw.rect(screen, COLOR_BORDER, rect_user_input, 1, border_radius=6)
-        txt_u = input_user_text if input_user_text else "Username..."
-        screen.blit(font_body.render(txt_u, True, COLOR_TEXT if input_user_text else COLOR_TEXT_MUTED), (rect_user_input.x + 10, rect_user_input.y + 10))
-
-        bg_pass = COLOR_BORDER if active_input == "pass" else COLOR_INPUT_BG
-        pygame.draw.rect(screen, bg_pass, rect_pass_input, border_radius=6)
-        pygame.draw.rect(screen, COLOR_BORDER, rect_pass_input, 1, border_radius=6)
-        txt_p = "•" * len(input_pass_text) if input_pass_text else "Password..."
-        screen.blit(font_body.render(txt_p, True, COLOR_TEXT if input_pass_text else COLOR_TEXT_MUTED), (rect_pass_input.x + 10, rect_pass_input.y + 10))
-
-        btn_text = "LOG IN" if auth_mode == MODE_LOGIN else "CREATE ACCOUNT"
-        pygame.draw.rect(screen, COLOR_ACCENT, rect_btn_submit, border_radius=6)
-        lbl_btn = font_body.render(btn_text, True, COLOR_TEXT)
-        screen.blit(lbl_btn, lbl_btn.get_rect(center=rect_btn_submit.center))
-
-    elif current_state == STATE_LOBBY:
-        username = user_data.get('username', 'Player')
-        screen.blit(font_title.render(f"Welcome, {username}", True, COLOR_TEXT), (40, 40))
-
-        card_left = pygame.Rect(40, 100, 320, 430)
-        pygame.draw.rect(screen, COLOR_CARD, card_left, border_radius=12)
-        pygame.draw.rect(screen, COLOR_BORDER, card_left, 1, border_radius=12)
-
-        screen.blit(font_title.render("Matchmaking", True, COLOR_TEXT), (60, 120))
-
-        screen.blit(font_sm.render("Your Stats", True, COLOR_TEXT_MUTED), (60, 158))
-        score = user_data.get("score", 0)
-        wins = user_data.get("wins", 0)
-        losses = user_data.get("losses", 0)
-        screen.blit(font_sm.render(f"Score: {score}", True, COLOR_TEXT), (60, 180))
-        screen.blit(font_sm.render(f"Wins: {wins}", True, COLOR_TEXT), (160, 180))
-        screen.blit(font_sm.render(f"Losses: {losses}", True, COLOR_TEXT), (245, 180))
-
-        screen.blit(font_sm.render("Host a new game:", True, COLOR_TEXT_MUTED), (60, 205))
-        pygame.draw.rect(screen, COLOR_ACCENT, rect_btn_create_lobby, border_radius=6)
-        lbl_create = font_body.render("+ CREATE LOBBY", True, COLOR_TEXT)
-        screen.blit(lbl_create, lbl_create.get_rect(center=rect_btn_create_lobby.center))
-
-        screen.blit(font_sm.render("Or enter room code:", True, COLOR_TEXT_MUTED), (60, 305))
-        bg_lobby = COLOR_BORDER if active_input == "lobby" else COLOR_INPUT_BG
-        pygame.draw.rect(screen, bg_lobby, rect_lobby_input, border_radius=6)
-        pygame.draw.rect(screen, COLOR_BORDER, rect_lobby_input, 1, border_radius=6)
-        txt_l = input_lobby_text if input_lobby_text else "ROOM CODE..."
-        screen.blit(font_body.render(txt_l, True, COLOR_TEXT if input_lobby_text else COLOR_TEXT_MUTED), (rect_lobby_input.x + 10, rect_lobby_input.y + 10))
-
-        pygame.draw.rect(screen, COLOR_BORDER, rect_btn_join_lobby, border_radius=6)
-        lbl_join = font_body.render("JOIN ROOM", True, COLOR_TEXT)
-        screen.blit(lbl_join, lbl_join.get_rect(center=rect_btn_join_lobby.center))
-
-        card_right = pygame.Rect(390, 100, 370, 430)
-        pygame.draw.rect(screen, COLOR_CARD, card_right, border_radius=12)
-        pygame.draw.rect(screen, COLOR_BORDER, card_right, 1, border_radius=12)
-
-        if not current_lobby_id:
-            lbl_empty = font_body.render("No Active Room", True, COLOR_TEXT_MUTED)
-            screen.blit(lbl_empty, lbl_empty.get_rect(center=card_right.center))
+        if rect_tab_login.collidepoint(pos):
+            auth_mode = MODE_LOGIN
+        elif rect_tab_reg.collidepoint(pos):
+            auth_mode = MODE_REGISTER
+        elif rect_user_input.collidepoint(pos):
+            active_input = "user"
+        elif rect_pass_input.collidepoint(pos):
+            active_input = "pass"
         else:
-            screen.blit(font_title.render(f"Room #{current_lobby_id}", True, COLOR_TEXT), (420, 130))
-            role_str = "You are Room Host" if is_host else "Connected as Guest"
-            screen.blit(font_sm.render(role_str, True, COLOR_ACCENT), (420, 165))
-            screen.blit(font_body.render("Status: Waiting for players...", True, COLOR_SUCCESS), (420, 210))
+            active_input = None
+        if rect_btn_submit.collidepoint(pos) and client.connected:
+            status_msg = "Sending request to server..."
+            if auth_mode == MODE_LOGIN:
+                client.login(input_user_text, input_pass_text)
+            else:
+                client.register(input_user_text, input_pass_text)
+    elif current_state == STATE_LOBBY:
+        active_input = "lobby" if rect_lobby_input.collidepoint(pos) else None
+        if rect_btn_create_lobby.collidepoint(pos) and client.connected:
+            status_msg = "Requesting new lobby..."
+            client.create_lobby(user_data.get("username", "Player"))
+        elif rect_btn_join_lobby.collidepoint(pos) and client.connected and input_lobby_text.strip():
+            status_msg = f"Joining lobby #{input_lobby_text.strip().upper()}..."
+            client.join_lobby(input_lobby_text)
+        elif rect_btn_start_game.collidepoint(pos) and client.connected and is_host:
+            status_msg = "Starting match..."
+            client.start_match()
 
-            if is_host:
-                pygame.draw.rect(screen, COLOR_ACCENT, rect_btn_start_game, border_radius=6)
-                lbl_start = font_body.render("START GAME", True, COLOR_TEXT)
-                screen.blit(lbl_start, lbl_start.get_rect(center=rect_btn_start_game.center))
 
-    elif current_state == STATE_GAME:
-        game_renderer.draw(screen, game_state, font_title, font_body, font_sm)
+def _handle_key(event):
+    global input_user_text, input_pass_text, input_lobby_text
 
-        if countdown_text:
-            overlay = font_title.render(countdown_text, True, COLOR_TEXT)
-            screen.blit(overlay, overlay.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2)))
-
-    if result_banner_text and pygame.time.get_ticks() < result_banner_until:
-        banner = font_title.render(result_banner_text, True, COLOR_SUCCESS if result_banner_text == "YOU WON!" else COLOR_TEXT)
-        screen.blit(banner, banner.get_rect(center=(WINDOW_WIDTH // 2, 70)))
-
-    lbl_status = font_sm.render(f"Status: {status_msg}", True, COLOR_TEXT_MUTED)
-    screen.blit(lbl_status, (20, WINDOW_HEIGHT - 30))
-
-    pygame.display.flip()
+    if current_state == STATE_AUTH:
+        if active_input == "user":
+            if event.key == pygame.K_BACKSPACE:
+                input_user_text = input_user_text[:-1]
+            elif event.key not in (pygame.K_RETURN, pygame.K_TAB):
+                input_user_text += event.unicode
+        elif active_input == "pass":
+            if event.key == pygame.K_BACKSPACE:
+                input_pass_text = input_pass_text[:-1]
+            elif event.key not in (pygame.K_RETURN, pygame.K_TAB):
+                input_pass_text += event.unicode
+    elif current_state == STATE_LOBBY and active_input == "lobby":
+        if event.key == pygame.K_BACKSPACE:
+            input_lobby_text = input_lobby_text[:-1]
+        elif event.key not in (pygame.K_RETURN, pygame.K_TAB):
+            input_lobby_text += event.unicode.upper()
+    elif current_state == STATE_GAME and event.key == pygame.K_SPACE:
+        players = game_state.get("players", {}) if game_state else {}
+        player = players.get(local_player_id) if local_player_id else None
+        if not isinstance(player, dict) and players:
+            player = next(iter(players.values()))
+        if isinstance(player, dict):
+            client.move_player(action="slam", facing=player.get("facing", "RIGHT"))
 
 
 def main():
-    global running, auth_mode, active_input, input_user_text, input_pass_text, input_lobby_text, status_msg
-    global client, game_renderer, countdown_text, countdown_until, result_banner_text, result_banner_until
+    global running, client, game_renderer, countdown_text, countdown_until
+    global result_banner_text, result_banner_until
 
     pygame.init()
-    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+    screen = pygame.display.set_mode((800, 600))
     pygame.display.set_caption("Checkerboard Chase Online")
     clock = pygame.time.Clock()
-
-    font_title = pygame.font.SysFont("monospace", 20, bold=True)
-    font_body = pygame.font.SysFont("monospace", 15)
-    font_sm = pygame.font.SysFont("monospace", 13)
+    fonts = (
+        pygame.font.SysFont("monospace", 20, bold=True),
+        pygame.font.SysFont("monospace", 15),
+        pygame.font.SysFont("monospace", 13),
+    )
 
     game_renderer = ClientGameRenderer()
     client = GameClient(on_event=on_client_event)
@@ -299,11 +194,9 @@ def main():
     while running:
         dt = clock.tick(60) / 1000.0
         now_ms = pygame.time.get_ticks()
-
         if countdown_text and now_ms >= countdown_until:
             countdown_text = None
             countdown_until = 0
-
         if result_banner_text and now_ms >= result_banner_until:
             result_banner_text = None
             result_banner_until = 0
@@ -312,77 +205,16 @@ def main():
             if event.type == pygame.QUIT:
                 running = False
                 break
-
-            elif event.type == pygame.MOUSEBUTTONDOWN:
-                pos = event.pos
-
-                if current_state == STATE_AUTH:
-                    if rect_tab_login.collidepoint(pos):
-                        auth_mode = MODE_LOGIN
-                    elif rect_tab_reg.collidepoint(pos):
-                        auth_mode = MODE_REGISTER
-                    elif rect_user_input.collidepoint(pos):
-                        active_input = "user"
-                    elif rect_pass_input.collidepoint(pos):
-                        active_input = "pass"
-                    else:
-                        active_input = None
-
-                    if rect_btn_submit.collidepoint(pos) and client.connected:
-                        status_msg = "Sending request to server..."
-                        if auth_mode == MODE_LOGIN:
-                            client.login(input_user_text, input_pass_text)
-                        else:
-                            client.register(input_user_text, input_pass_text)
-
-                elif current_state == STATE_LOBBY:
-                    if rect_lobby_input.collidepoint(pos):
-                        active_input = "lobby"
-                    else:
-                        active_input = None
-
-                    if rect_btn_create_lobby.collidepoint(pos) and client.connected:
-                        status_msg = "Requesting new lobby..."
-                        client.create_lobby(user_data.get("username", "Player"))
-
-                    elif rect_btn_join_lobby.collidepoint(pos) and client.connected and input_lobby_text.strip():
-                        status_msg = f"Joining lobby #{input_lobby_text.strip().upper()}..."
-                        client.join_lobby(input_lobby_text)
-
-                    elif rect_btn_start_game.collidepoint(pos) and client.connected and is_host:
-                        status_msg = "Starting match..."
-                        client.start_match()
-
+            if event.type == pygame.MOUSEBUTTONDOWN:
+                _handle_mouse(event.pos)
             elif event.type == pygame.KEYDOWN:
-                if current_state == STATE_AUTH:
-                    if active_input == "user":
-                        if event.key == pygame.K_BACKSPACE:
-                            input_user_text = input_user_text[:-1]
-                        elif event.key not in (pygame.K_RETURN, pygame.K_TAB):
-                            input_user_text += event.unicode
-                    elif active_input == "pass":
-                        if event.key == pygame.K_BACKSPACE:
-                            input_pass_text = input_pass_text[:-1]
-                        elif event.key not in (pygame.K_RETURN, pygame.K_TAB):
-                            input_pass_text += event.unicode
-                elif current_state == STATE_LOBBY and active_input == "lobby":
-                    if event.key == pygame.K_BACKSPACE:
-                        input_lobby_text = input_lobby_text[:-1]
-                    elif event.key not in (pygame.K_RETURN, pygame.K_TAB):
-                        input_lobby_text += event.unicode.upper()
-                elif current_state == STATE_GAME:
-                    if event.key == pygame.K_SPACE:
-                        player = game_state.get("players", {}).get(local_player_id) if local_player_id else None
-                        if not isinstance(player, dict):
-                            player = next(iter(game_state.get("players", {}).values()), None) if game_state and game_state.get("players") else None
-                        if isinstance(player, dict):
-                            facing = player.get("facing", "RIGHT")
-                            client.move_player(action="slam", facing=facing)
+                _handle_key(event)
 
         if current_state == STATE_GAME:
-            update_demo_player(dt)
-
-        draw_ui(screen, font_title, font_body, font_sm)
+            update_player(game_state, local_player_id, client, dt)
+            draw_game(screen, game_state, game_renderer, fonts, countdown_text, result_banner_text, result_banner_until, status_msg)
+        else:
+            draw_lobby(screen, _screen_state(), fonts)
 
     pygame.quit()
 
