@@ -129,6 +129,12 @@ class GameClient:
                         data = {"message": payload.decode("utf-8", errors="ignore")}
                     self._emit("game_state", data)
 
+                elif opcode == protocol.OP_REPLAY_LIST:
+                    self._emit("replay_list", self._safe_json_load(payload))
+
+                elif opcode == protocol.OP_REPLAY_RESPONSE:
+                    self._emit("replay_response", self._safe_json_load(payload))
+
                 elif opcode == protocol.OP_ERROR:
                     self._emit("error", {"message": payload.decode("utf-8", errors="ignore")})
 
@@ -199,6 +205,16 @@ class GameClient:
         if not self.connected:
             raise RuntimeError("Client is not connected.")
         protocol.send_msg(self.sock, protocol.OP_CHAT_MSG, message.encode("utf-8"), cipher=self.cipher)
+
+    def request_replays(self):
+        if not self.connected:
+            raise RuntimeError("Client is not connected.")
+        protocol.send_msg(self.sock, protocol.OP_REPLAY_LIST, b"list", cipher=self.cipher)
+
+    def request_replay(self, replay_id):
+        if not self.connected:
+            raise RuntimeError("Client is not connected.")
+        protocol.send_msg(self.sock, protocol.OP_REPLAY_REQUEST, str(replay_id).encode("utf-8"), cipher=self.cipher)
 
     def disconnect(self):
         self.running = False

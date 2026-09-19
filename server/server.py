@@ -22,6 +22,9 @@ class Lobby:
         self.client_ids = {}
         self.client_usernames = {}
         self.host_socket = None
+        self.replay_id = None
+        self.replay_started_at = None
+        self.replay_frame_number = 0
 
     def add_client(self, client_socket, cipher, username=None):
         with self.lock:
@@ -105,6 +108,9 @@ class Lobby:
 
         self._assign_players()
         self.match_started = True
+        self.replay_id = db_manager.create_replay(self.lobby_id)
+        self.replay_started_at = None
+        self.replay_frame_number = 0
 
         self.countdown_thread = threading.Thread(target=self._run_countdown, daemon=True)
         self.countdown_thread.start()
@@ -115,6 +121,7 @@ class Lobby:
             self.broadcast_match_start(str(value))
             time.sleep(1)
 
+        self.replay_started_at = time.monotonic()
         self.match_thread = threading.Thread(target=self._run_match_loop, daemon=True)
         self.match_thread.start()
         self.broadcast_game_state()
@@ -160,6 +167,12 @@ class Lobby:
                 "score_delta": 50 if won else -50,
             })
 
+        if self.replay_id is not None:
+            duration_ms = 0
+            if self.replay_started_at is not None:
+                duration_ms = int((time.monotonic() - self.replay_started_at) * 1000)
+            db_manager.finish_replay(self.replay_id, winner_username, duration_ms)
+
         payload = {
             "winner_player_id": winner_player_id,
             "winner_username": winner_username,
@@ -170,6 +183,9 @@ class Lobby:
         self.match_started = False
         self.game = None
         self.match_thread = None
+        self.replay_id = None
+        self.replay_started_at = None
+        self.replay_frame_number = 0
 
         payload_bytes = json.dumps(payload).encode("utf-8")
         client_sockets = list(self.clients.keys())
@@ -193,7 +209,18 @@ class Lobby:
         if self.game is None:
             return
 
-        payload = json.dumps(self.game.serialize_state()).encode('utf-8')
+        game_state = self.game.serialize_state()
+        if self.replay_id is not None and self.replay_started_at is not None:
+            elapsed_ms = int((time.monotonic() - self.replay_started_at) * 1000)
+            db_manager.save_replay_frame(
+                self.replay_id,
+                self.replay_frame_number,
+                elapsed_ms,
+                game_state,
+            )
+            self.replay_frame_number += 1
+
+        payload = json.dumps(game_state).encode('utf-8')
         with self.lock:
             for client, cipher in list(self.clients.items()):
                 try:
@@ -341,14 +368,76 @@ def handle_client(client_sock, client_addr, server_dh_params):
                 try:
                     data = json.loads(payload.decode("utf-8", errors="ignore"))
                     if isinstance(data, dict) and data.get("action") == "slam":
-                        current_lobby.game.handle_slam(player_id, data.get("facing", "RIGHT"))
+                        facing = data.get("facing", "RIGHT")
+                        current_lobby.game.handle_slam(player_id, facing)
+                        action = "SLAM"
+                        details = {"direction": facing}
                     else:
-                        current_lobby.game.move_player(player_id, dx=data.get("dx", 0.0), dy=data.get("dy", 0.0))
+                        dx = data.get("dx", 0.0)
+                        dy = data.get("dy", 0.0)
+                        current_lobby.game.move_player(player_id, dx=dx, dy=dy)
+                        action = "MOVE"
+                        details = {"dx": dx, "dy": dy}
                 except Exception:
                     direction = payload.decode("utf-8", errors="ignore").upper()
                     current_lobby.game.move_player(player_id, direction=direction)
+                    action = "MOVE"
+                    details = {"direction": direction}
+
+                if current_lobby.replay_id is not None:
+                    username = current_lobby.client_usernames.get(client_sock, player_id)
+                    elapsed_ms = 0
+                    if current_lobby.replay_started_at is not None:
+                        elapsed_ms = int((time.monotonic() - current_lobby.replay_started_at) * 1000)
+                    db_manager.save_replay_event(
+                        current_lobby.replay_id,
+                        username,
+                        elapsed_ms,
+                        action,
+                        details,
+                    )
 
                 current_lobby.broadcast_game_state()
+
+            elif opcode == protocol.OP_REPLAY_LIST:
+                replays = db_manager.get_replays()
+                replay_payload = [
+                    {
+                        "id": replay_id,
+                        "match_id": match_id,
+                        "winner_username": winner_username,
+                        "duration_ms": duration_ms,
+                        "created_at": created_at,
+                    }
+                    for replay_id, match_id, winner_username, duration_ms, created_at in replays
+                ]
+                protocol.send_msg(
+                    client_sock,
+                    protocol.OP_REPLAY_LIST,
+                    json.dumps(replay_payload).encode("utf-8"),
+                    cipher=cipher,
+                )
+
+            elif opcode == protocol.OP_REPLAY_REQUEST:
+                try:
+                    replay_id = int(payload.decode("utf-8"))
+                    frames = db_manager.get_replay_frames(replay_id)
+                    replay_payload = [
+                        {
+                            "frame_number": frame_number,
+                            "elapsed_ms": elapsed_ms,
+                            "game_state": json.loads(game_state),
+                        }
+                        for frame_number, elapsed_ms, game_state in frames
+                    ]
+                    protocol.send_msg(
+                        client_sock,
+                        protocol.OP_REPLAY_RESPONSE,
+                        json.dumps({"replay_id": replay_id, "frames": replay_payload}).encode("utf-8"),
+                        cipher=cipher,
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                    protocol.send_msg(client_sock, protocol.OP_ERROR, f"Replay unavailable: {exc}".encode("utf-8"), cipher=cipher)
 
             elif opcode == protocol.OP_CHAT_MSG:
                 if current_lobby:

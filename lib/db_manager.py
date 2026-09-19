@@ -243,7 +243,7 @@ def get_replays(limit: int = 20) -> list[tuple]:
 
 def get_replay_frames(replay_id: int) -> list[tuple]:
     """Return replay frames in playback order."""
-    with sqlite3.connect(DB_FILE) as conn:
+    with _db_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
             """
@@ -251,6 +251,22 @@ def get_replay_frames(replay_id: int) -> list[tuple]:
             FROM replay_frames
             WHERE replay_id = ?
             ORDER BY frame_number ASC
+            """,
+            (replay_id,),
+        )
+        return cursor.fetchall()
+
+
+def get_replay_events(replay_id: int) -> list[tuple]:
+    """Return player actions in replay order."""
+    with _db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT player_username, elapsed_ms, action, details
+            FROM replay_events
+            WHERE replay_id = ?
+            ORDER BY elapsed_ms ASC, id ASC
             """,
             (replay_id,),
         )

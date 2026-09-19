@@ -26,6 +26,7 @@ rect_btn_create_lobby = pygame.Rect(60, 230, 280, 45)
 rect_lobby_input = pygame.Rect(60, 330, 280, 40)
 rect_btn_join_lobby = pygame.Rect(60, 385, 280, 45)
 rect_btn_start_game = pygame.Rect(420, 245, 230, 45)
+rect_btn_replay = pygame.Rect(420, 385, 230, 45)
 
 
 def draw(screen, state, fonts):
@@ -124,3 +125,7 @@ def _draw_lobby(screen, state, font_title, font_body, font_sm):
         pygame.draw.rect(screen, COLOR_ACCENT, rect_btn_start_game, border_radius=6)
         label = font_body.render("START GAME", True, COLOR_TEXT)
         screen.blit(label, label.get_rect(center=rect_btn_start_game.center))
+
+    pygame.draw.rect(screen, COLOR_BORDER, rect_btn_replay, border_radius=6)
+    label = font_body.render("WATCH LAST REPLAY", True, COLOR_TEXT)
+    screen.blit(label, label.get_rect(center=rect_btn_replay.center))

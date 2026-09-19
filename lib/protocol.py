@@ -21,6 +21,9 @@ OP_GAME_STATE      = 10
 OP_START_MATCH      = 11
 OP_MOVE_PLAYER      = 12
 OP_MATCH_END       = 13
+OP_REPLAY_LIST     = 14
+OP_REPLAY_REQUEST  = 15
+OP_REPLAY_RESPONSE = 16
 OP_ERROR           = 99
 
 # Legacy / Alternative Aliases
