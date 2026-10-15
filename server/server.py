@@ -30,6 +30,7 @@ class Lobby:
         self.replay_id = None
         self.replay_started_at = None
         self.replay_frame_number = 0
+        self.replay_last_frame_at = 0.0
 
     def add_client(self, client_socket, cipher, username=None):
         with self.lock:
@@ -116,6 +117,7 @@ class Lobby:
         self.replay_id = db_manager.create_replay(self.lobby_id)
         self.replay_started_at = None
         self.replay_frame_number = 0
+        self.replay_last_frame_at = 0.0
 
         self.countdown_thread = threading.Thread(target=self._run_countdown, daemon=True)
         self.countdown_thread.start()
@@ -195,6 +197,7 @@ class Lobby:
         self.replay_id = None
         self.replay_started_at = None
         self.replay_frame_number = 0
+        self.replay_last_frame_at = 0.0
 
         payload_bytes = json.dumps(payload).encode("utf-8")
         client_sockets = list(self.clients.keys())
@@ -215,19 +218,24 @@ class Lobby:
                     self.remove_client(client)
 
     def broadcast_game_state(self):
+        replay_frame = None
         with self.state_lock:
             if self.game is None:
                 return
             game_state = self.game.serialize_state()
+            now = time.monotonic()
             if self.replay_id is not None and self.replay_started_at is not None:
-                elapsed_ms = int((time.monotonic() - self.replay_started_at) * 1000)
-                db_manager.save_replay_frame(
-                    self.replay_id,
-                    self.replay_frame_number,
-                    elapsed_ms,
-                    game_state,
-                )
-                self.replay_frame_number += 1
+                if self.replay_frame_number == 0 or now - self.replay_last_frame_at >= 0.2:
+                    replay_frame = (
+                        self.replay_id,
+                        self.replay_frame_number,
+                        int((now - self.replay_started_at) * 1000),
+                    )
+                    self.replay_frame_number += 1
+                    self.replay_last_frame_at = now
+
+        if replay_frame is not None:
+            db_manager.save_replay_frame(*replay_frame, game_state)
 
         udp_payload = json.dumps({"type": "game_state", "state": game_state}).encode("utf-8")
         _broadcast_udp_game_state(self, udp_payload)
@@ -412,7 +420,6 @@ def _handle_udp_payload(udp_sock, token, address, payload):
             game.move_player(player_id, dx=dx, dy=dy)
         if facing is not None:
             player["facing"] = facing
-        _save_udp_replay_event(lobby, client_sock, player_id, "MOVE", {"x": player["x"], "y": player["y"]})
 
 
 def _game_udp_loop(udp_sock):

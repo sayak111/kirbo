@@ -10,6 +10,32 @@ COLOR_SUCCESS = (34, 197, 94)
 COLOR_TEXT_MUTED = (161, 161, 170)
 
 
+def merge_authoritative_state(current_state, incoming_state, local_player_id):
+    if not isinstance(current_state, dict) or not isinstance(incoming_state, dict):
+        return incoming_state
+
+    current_players = current_state.get("players")
+    incoming_players = incoming_state.get("players")
+    if not isinstance(current_players, dict) or not isinstance(incoming_players, dict):
+        return incoming_state
+
+    current_player = current_players.get(local_player_id)
+    incoming_player = incoming_players.get(local_player_id)
+    if not isinstance(current_player, dict) or not isinstance(incoming_player, dict):
+        return incoming_state
+
+    same_life_state = (
+        current_player.get("lives") == incoming_player.get("lives")
+        and current_player.get("is_alive") == incoming_player.get("is_alive")
+    )
+    if same_life_state and "x" in current_player and "y" in current_player:
+        incoming_player["x"] = current_player["x"]
+        incoming_player["y"] = current_player["y"]
+        incoming_player["facing"] = current_player.get("facing", incoming_player.get("facing", "RIGHT"))
+
+    return incoming_state
+
+
 def update_player(game_state, local_player_id, client, dt):
     if not game_state or not isinstance(game_state.get("players", {}), dict):
         return

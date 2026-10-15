@@ -2,7 +2,7 @@ import pygame
 
 from client.client import GameClient
 from client.game_renderer import ClientGameRenderer
-from client.game_screen import draw as draw_game, update_player
+from client.game_screen import draw as draw_game, merge_authoritative_state, update_player
 from client.lobby_screen import (
     MODE_LOGIN,
     MODE_REGISTER,
@@ -96,7 +96,7 @@ def on_client_event(event, payload):
         if client and client.connected:
             client.request_replays()
     elif event == "game_state":
-        game_state = payload
+        game_state = merge_authoritative_state(game_state, payload, local_player_id)
         current_state = STATE_GAME
     elif event == "replay_list":
         if payload:
