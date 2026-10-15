@@ -1,9 +1,13 @@
 import json
+import math
+import secrets
 import socket
 import threading
 import struct
 import time
 import uuid
+
+from cryptography.exceptions import InvalidTag
 
 from lib import db_manager
 from lib import protocol
@@ -16,6 +20,7 @@ class Lobby:
         self.lobby_id = lobby_id
         self.clients = {}
         self.lock = threading.Lock()
+        self.state_lock = threading.RLock()
         self.game = None
         self.match_started = False
         self.match_thread = None
@@ -128,20 +133,24 @@ class Lobby:
 
     def _run_match_loop(self):
         while self.clients:
-            if self.game is not None:
-                self.game.tick()
+            with self.state_lock:
+                game = self.game
+                if game is not None:
+                    game.tick()
+                    alive_players = [
+                        player_id for player_id, player in game.engine.players.items()
+                        if player.get("is_alive", False)
+                    ]
+                else:
+                    alive_players = []
+
+            if game is not None:
                 self.broadcast_game_state()
-
-                alive_players = [
-                    player_id for player_id, player in self.game.engine.players.items()
-                    if player.get("is_alive", False)
-                ]
-
                 if len(alive_players) <= 1:
                     self._finish_match(alive_players[0] if alive_players else None)
                     break
 
-            time.sleep(0.5)
+            time.sleep(0.05)
 
     def _finish_match(self, winner_player_id=None):
         if self.game is None:
@@ -206,27 +215,22 @@ class Lobby:
                     self.remove_client(client)
 
     def broadcast_game_state(self):
-        if self.game is None:
-            return
+        with self.state_lock:
+            if self.game is None:
+                return
+            game_state = self.game.serialize_state()
+            if self.replay_id is not None and self.replay_started_at is not None:
+                elapsed_ms = int((time.monotonic() - self.replay_started_at) * 1000)
+                db_manager.save_replay_frame(
+                    self.replay_id,
+                    self.replay_frame_number,
+                    elapsed_ms,
+                    game_state,
+                )
+                self.replay_frame_number += 1
 
-        game_state = self.game.serialize_state()
-        if self.replay_id is not None and self.replay_started_at is not None:
-            elapsed_ms = int((time.monotonic() - self.replay_started_at) * 1000)
-            db_manager.save_replay_frame(
-                self.replay_id,
-                self.replay_frame_number,
-                elapsed_ms,
-                game_state,
-            )
-            self.replay_frame_number += 1
-
-        payload = json.dumps(game_state).encode('utf-8')
-        with self.lock:
-            for client, cipher in list(self.clients.items()):
-                try:
-                    protocol.send_msg(client, protocol.OP_GAME_STATE, payload, cipher=cipher)
-                except Exception:
-                    self.remove_client(client)
+        udp_payload = json.dumps({"type": "game_state", "state": game_state}).encode("utf-8")
+        _broadcast_udp_game_state(self, udp_payload)
 
     def broadcast(self, opcode: int, payload_bytes: bytes, sender_socket=None):
         with self.lock:
@@ -240,6 +244,196 @@ class Lobby:
 
 LOBBIES = {}
 LOBBIES_LOCK = threading.Lock()
+UDP_SESSIONS = {}
+UDP_SESSIONS_LOCK = threading.Lock()
+GAME_UDP_SOCKET = None
+
+
+def _udp_packet(token, cipher, payload):
+    return token.encode('ascii') + b"\0" + cipher.encrypt(payload)
+
+
+def _register_udp_session(token, client_sock, lobby, cipher):
+    with UDP_SESSIONS_LOCK:
+        for existing_token, session in list(UDP_SESSIONS.items()):
+            if session["client"] is client_sock:
+                del UDP_SESSIONS[existing_token]
+        UDP_SESSIONS[token] = {
+            "client": client_sock,
+            "lobby": lobby,
+            "cipher": cipher,
+            "address": None,
+            "last_move_sequence": -1,
+            "seen_actions": set(),
+        }
+
+
+def _unregister_udp_session(client_sock):
+    with UDP_SESSIONS_LOCK:
+        for token, session in list(UDP_SESSIONS.items()):
+            if session["client"] is client_sock:
+                del UDP_SESSIONS[token]
+
+
+def _broadcast_udp_game_state(lobby, payload):
+    if GAME_UDP_SOCKET is None:
+        return
+
+    with UDP_SESSIONS_LOCK:
+        destinations = [
+            (token, session["cipher"], session["address"])
+            for token, session in UDP_SESSIONS.items()
+            if session["lobby"] is lobby and session["address"] is not None
+        ]
+
+    for token, cipher, address in destinations:
+        try:
+            GAME_UDP_SOCKET.sendto(_udp_packet(token, cipher, payload), address)
+        except OSError as exc:
+            print(f"[UDP SEND ERROR] {address}: {exc}")
+
+
+def _save_udp_replay_event(lobby, client_sock, player_id, action, details):
+    if lobby.replay_id is None:
+        return
+    username = lobby.client_usernames.get(client_sock, player_id)
+    elapsed_ms = 0
+    if lobby.replay_started_at is not None:
+        elapsed_ms = int((time.monotonic() - lobby.replay_started_at) * 1000)
+    db_manager.save_replay_event(lobby.replay_id, username, elapsed_ms, action, details)
+
+
+def _handle_udp_payload(udp_sock, token, address, payload):
+    with UDP_SESSIONS_LOCK:
+        session = UDP_SESSIONS.get(token)
+        if session is None:
+            return
+        cipher = session["cipher"]
+
+    try:
+        message = json.loads(cipher.decrypt(payload).decode("utf-8"))
+    except (InvalidTag, ValueError, TypeError, UnicodeDecodeError):
+        return
+
+    if not isinstance(message, dict):
+        return
+
+    with UDP_SESSIONS_LOCK:
+        session = UDP_SESSIONS.get(token)
+        if session is None:
+            return
+        session["address"] = address
+        lobby = session["lobby"]
+        client_sock = session["client"]
+
+    message_type = message.get("type")
+    if message_type == "hello":
+        try:
+            udp_sock.sendto(_udp_packet(token, cipher, b'{"type":"ready"}'), address)
+        except OSError as exc:
+            print(f"[UDP SEND ERROR] {address}: {exc}")
+        return
+
+    if message_type == "slam":
+        action_id = message.get("action_id")
+        facing = message.get("facing")
+        if type(action_id) is not int or action_id < 0 or facing not in ("UP", "DOWN", "LEFT", "RIGHT"):
+            return
+        with lobby.state_lock:
+            if not lobby.match_started or lobby.game is None:
+                return
+            player_id = lobby.client_ids.get(client_sock)
+            if not player_id:
+                return
+            with UDP_SESSIONS_LOCK:
+                session = UDP_SESSIONS.get(token)
+                if session is None:
+                    return
+                duplicate = action_id in session["seen_actions"]
+                if not duplicate:
+                    session["seen_actions"].add(action_id)
+                    if len(session["seen_actions"]) > 256:
+                        session["seen_actions"].remove(min(session["seen_actions"]))
+            if not duplicate:
+                lobby.game.handle_slam(player_id, facing)
+                _save_udp_replay_event(lobby, client_sock, player_id, "SLAM", {"direction": facing})
+        try:
+            ack = json.dumps({"type": "ack", "action_id": action_id}).encode("utf-8")
+            udp_sock.sendto(_udp_packet(token, cipher, ack), address)
+        except OSError as exc:
+            print(f"[UDP SEND ERROR] {address}: {exc}")
+        return
+
+    if message_type != "move" or not lobby.match_started or lobby.game is None:
+        return
+
+    sequence = message.get("sequence")
+    if type(sequence) is not int or sequence < 0:
+        return
+    with UDP_SESSIONS_LOCK:
+        session = UDP_SESSIONS.get(token)
+        if session is None or sequence <= session["last_move_sequence"]:
+            return
+        session["last_move_sequence"] = sequence
+
+    player_id = lobby.client_ids.get(client_sock)
+    if not player_id:
+        return
+
+    facing = message.get("facing")
+    if facing not in ("UP", "DOWN", "LEFT", "RIGHT"):
+        facing = None
+
+    with lobby.state_lock:
+        game = lobby.game
+        if game is None:
+            return
+        player = game.engine.players.get(player_id)
+        if not player or not player["is_alive"]:
+            return
+
+        x = message.get("x")
+        y = message.get("y")
+        if "x" in message or "y" in message:
+            if not isinstance(x, (int, float)) or isinstance(x, bool) or not math.isfinite(x):
+                return
+            if not isinstance(y, (int, float)) or isinstance(y, bool) or not math.isfinite(y):
+                return
+            game.move_player(player_id, dx=x - player["x"], dy=y - player["y"])
+        elif message.get("direction") in ("UP", "DOWN", "LEFT", "RIGHT"):
+            game.move_player(player_id, direction=message["direction"])
+        else:
+            dx = message.get("dx", 0.0)
+            dy = message.get("dy", 0.0)
+            if not isinstance(dx, (int, float)) or isinstance(dx, bool) or not math.isfinite(dx):
+                return
+            if not isinstance(dy, (int, float)) or isinstance(dy, bool) or not math.isfinite(dy):
+                return
+            game.move_player(player_id, dx=dx, dy=dy)
+        if facing is not None:
+            player["facing"] = facing
+        _save_udp_replay_event(lobby, client_sock, player_id, "MOVE", {"x": player["x"], "y": player["y"]})
+
+
+def _game_udp_loop(udp_sock):
+    while True:
+        try:
+            packet, address = udp_sock.recvfrom(65507)
+        except socket.timeout:
+            continue
+        except OSError as exc:
+            print(f"[UDP RECEIVE ERROR] {exc}")
+            return
+
+        try:
+            token_bytes, encrypted_payload = packet.split(b"\0", 1)
+            token = token_bytes.decode("ascii")
+        except (ValueError, UnicodeDecodeError):
+            continue
+        try:
+            _handle_udp_payload(udp_sock, token, address, encrypted_payload)
+        except Exception as exc:
+            print(f"[UDP PACKET ERROR] {address}: {exc}")
 
 
 def handle_client(client_sock, client_addr, server_dh_params):
@@ -247,6 +441,7 @@ def handle_client(client_sock, client_addr, server_dh_params):
     cipher = None
     current_lobby = None
     client_username = None
+    udp_token = secrets.token_hex(32)
 
     try:
         dh_session = security.DHHandshake(parameters=server_dh_params)
@@ -320,9 +515,10 @@ def handle_client(client_sock, client_addr, server_dh_params):
                     LOBBIES[lobby_id] = new_lobby
 
                 current_lobby = new_lobby
+                _register_udp_session(udp_token, client_sock, current_lobby, cipher)
                 print(f"[LOBBY CREATED] ID: {lobby_id} by {client_addr}")
                 player_id = new_lobby.client_ids.get(client_sock, "p1")
-                res_payload = f"CREATED:{lobby_id}:{player_id}".encode('utf-8')
+                res_payload = f"CREATED:{lobby_id}:{player_id}:{udp_token}".encode('utf-8')
                 protocol.send_msg(client_sock, protocol.OP_LOBBY_RESPONSE, res_payload, cipher=cipher)
 
             elif opcode == protocol.OP_JOIN_LOBBY:
@@ -336,9 +532,10 @@ def handle_client(client_sock, client_addr, server_dh_params):
                         continue
 
                     current_lobby = target_lobby
+                    _register_udp_session(udp_token, client_sock, current_lobby, cipher)
                     print(f"[LOBBY JOIN] {client_addr} joined lobby #{target_id}")
                     player_id = target_lobby.client_ids.get(client_sock, "p1")
-                    res_payload = f"JOINED:{target_id}:{player_id}".encode('utf-8')
+                    res_payload = f"JOINED:{target_id}:{player_id}:{udp_token}".encode('utf-8')
                     protocol.send_msg(client_sock, protocol.OP_LOBBY_RESPONSE, res_payload, cipher=cipher)
                     current_lobby.broadcast(protocol.OP_CHAT_MSG, b"A new player joined the room!", sender_socket=client_sock)
                 else:
@@ -357,47 +554,6 @@ def handle_client(client_sock, client_addr, server_dh_params):
                         cipher=cipher
                     )
 
-            elif opcode == protocol.OP_MOVE_PLAYER:
-                if not current_lobby or not current_lobby.game:
-                    continue
-
-                player_id = current_lobby.client_ids.get(client_sock)
-                if not player_id:
-                    continue
-
-                try:
-                    data = json.loads(payload.decode("utf-8", errors="ignore"))
-                    if isinstance(data, dict) and data.get("action") == "slam":
-                        facing = data.get("facing", "RIGHT")
-                        current_lobby.game.handle_slam(player_id, facing)
-                        action = "SLAM"
-                        details = {"direction": facing}
-                    else:
-                        dx = data.get("dx", 0.0)
-                        dy = data.get("dy", 0.0)
-                        current_lobby.game.move_player(player_id, dx=dx, dy=dy)
-                        action = "MOVE"
-                        details = {"dx": dx, "dy": dy}
-                except Exception:
-                    direction = payload.decode("utf-8", errors="ignore").upper()
-                    current_lobby.game.move_player(player_id, direction=direction)
-                    action = "MOVE"
-                    details = {"direction": direction}
-
-                if current_lobby.replay_id is not None:
-                    username = current_lobby.client_usernames.get(client_sock, player_id)
-                    elapsed_ms = 0
-                    if current_lobby.replay_started_at is not None:
-                        elapsed_ms = int((time.monotonic() - current_lobby.replay_started_at) * 1000)
-                    db_manager.save_replay_event(
-                        current_lobby.replay_id,
-                        username,
-                        elapsed_ms,
-                        action,
-                        details,
-                    )
-
-                current_lobby.broadcast_game_state()
 
             elif opcode == protocol.OP_REPLAY_LIST:
                 replays = db_manager.get_replays()
@@ -446,6 +602,7 @@ def handle_client(client_sock, client_addr, server_dh_params):
     except Exception as e:
         print(f"[ERROR] Client handling error ({client_addr}): {e}")
     finally:
+        _unregister_udp_session(client_sock)
         if current_lobby:
             current_lobby.remove_client(client_sock)
             if not current_lobby.clients:
@@ -470,7 +627,14 @@ def main():
     server_sock.bind((HOST, PORT))
     server_sock.listen(5)
 
-    print(f"[SERVER STARTED] Listening on {HOST}:{PORT}")
+    global GAME_UDP_SOCKET
+    GAME_UDP_SOCKET = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    GAME_UDP_SOCKET.bind((HOST, PORT + 1))
+    GAME_UDP_SOCKET.settimeout(0.5)
+    udp_thread = threading.Thread(target=_game_udp_loop, args=(GAME_UDP_SOCKET,), daemon=True)
+    udp_thread.start()
+
+    print(f"[SERVER STARTED] TCP on {HOST}:{PORT}; gameplay UDP on {HOST}:{PORT + 1}")
 
     while True:
         client_sock, client_addr = server_sock.accept()

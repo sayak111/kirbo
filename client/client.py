@@ -2,13 +2,16 @@ import json
 import socket
 import struct
 import threading
+import time
+
+from cryptography.exceptions import InvalidTag
 
 from lib import protocol
 from lib import security
 
 
 class GameClient:
-    def __init__(self, host="127.0.0.1", port=3000, on_event=None):
+    def __init__(self, host="10.32.143.15", port=3000, on_event=None):
         self.host = host
         self.port = port
         self.on_event = on_event or self._default_event_handler
@@ -18,6 +21,13 @@ class GameClient:
         self.connected = False
         self.running = False
         self.listen_thread = None
+        self.udp_socket = None
+        self.udp_thread = None
+        self.udp_token = None
+        self.udp_sequence = 0
+        self.udp_lock = threading.Lock()
+        self.pending_udp_actions = {}
+        self.last_move_sent = 0.0
 
         self.user_data = {}
         self.current_lobby_id = None
@@ -70,6 +80,120 @@ class GameClient:
             self.disconnect()
             return False
 
+    def _start_udp(self, token):
+        if self.udp_token == token and self.udp_socket is not None:
+            return
+        self._stop_udp()
+        udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        udp_socket.settimeout(0.25)
+        self.udp_socket = udp_socket
+        self.udp_token = token
+        self.udp_sequence = 0
+        self.last_move_sent = 0.0
+        self.udp_thread = threading.Thread(
+            target=self._udp_listen_loop,
+            args=(udp_socket, token, self.cipher),
+            daemon=True,
+        )
+        self.udp_thread.start()
+        self._send_udp({"type": "hello"})
+
+    def _send_udp(self, message, reliable=False):
+        with self.udp_lock:
+            udp_socket = self.udp_socket
+            token = self.udp_token
+            cipher = self.cipher
+            if udp_socket is None or token is None or cipher is None:
+                self._emit("error", {"message": "UDP gameplay channel is not ready."})
+                return None
+
+            self.udp_sequence += 1
+            sequence = self.udp_sequence
+            payload = dict(message)
+            payload["sequence"] = sequence
+            if reliable:
+                payload["action_id"] = sequence
+            packet = token.encode("ascii") + b"\0" + cipher.encrypt(
+                json.dumps(payload).encode("utf-8")
+            )
+            if reliable:
+                self.pending_udp_actions[sequence] = {
+                    "packet": packet,
+                    "sent_at": time.monotonic(),
+                    "retries": 0,
+                }
+
+        try:
+            udp_socket.sendto(packet, (self.host, self.port + 1))
+        except OSError as exc:
+            if reliable:
+                with self.udp_lock:
+                    self.pending_udp_actions.pop(sequence, None)
+            self._emit("error", {"message": f"UDP send failed ({exc})"})
+            return None
+        return sequence
+
+    def _udp_listen_loop(self, udp_socket, token, cipher):
+        while self.running and self.udp_socket is udp_socket:
+            try:
+                packet, _ = udp_socket.recvfrom(65507)
+            except socket.timeout:
+                now = time.monotonic()
+                with self.udp_lock:
+                    retries = [
+                        (sequence, item.copy())
+                        for sequence, item in self.pending_udp_actions.items()
+                        if now - item["sent_at"] >= 0.3
+                    ]
+                for sequence, item in retries:
+                    if item["retries"] >= 5:
+                        with self.udp_lock:
+                            self.pending_udp_actions.pop(sequence, None)
+                        self._emit("error", {"message": "UDP action was not acknowledged."})
+                        continue
+                    try:
+                        udp_socket.sendto(item["packet"], (self.host, self.port + 1))
+                    except OSError as exc:
+                        self._emit("error", {"message": f"UDP retry failed ({exc})"})
+                        continue
+                    with self.udp_lock:
+                        current = self.pending_udp_actions.get(sequence)
+                        if current is not None:
+                            current["sent_at"] = now
+                            current["retries"] += 1
+                continue
+            except OSError:
+                break
+
+            try:
+                received_token, encrypted = packet.split(b"\0", 1)
+                if received_token.decode("ascii") != token:
+                    continue
+                message = json.loads(cipher.decrypt(encrypted).decode("utf-8"))
+            except (InvalidTag, ValueError, TypeError, UnicodeDecodeError):
+                continue
+
+            if not isinstance(message, dict):
+                continue
+            if message.get("type") == "ready":
+                self._emit("udp_ready", {"host": self.host, "port": self.port + 1})
+            elif message.get("type") == "ack":
+                with self.udp_lock:
+                    self.pending_udp_actions.pop(message.get("action_id"), None)
+            elif message.get("type") == "game_state":
+                self._emit("game_state", message.get("state", {}))
+
+    def _stop_udp(self):
+        udp_socket = self.udp_socket
+        self.udp_socket = None
+        self.udp_token = None
+        self.pending_udp_actions.clear()
+        if udp_socket is not None:
+            try:
+                udp_socket.close()
+            except OSError:
+                pass
+
     def _listen_loop(self):
         while self.running:
             try:
@@ -100,10 +224,15 @@ class GameClient:
                         self.current_lobby_id = parts[0]
                         self.is_host = action == "CREATED"
                         self.player_id = parts[1] if len(parts) > 1 else None
+                        udp_token = parts[2] if len(parts) > 2 else None
                     else:
                         self.current_lobby_id = msg
                         self.is_host = False
                         self.player_id = None
+                        udp_token = None
+
+                    if udp_token:
+                        self._start_udp(udp_token)
 
                     self._emit("lobby_response", {
                         "lobby_id": self.current_lobby_id,
@@ -182,24 +311,29 @@ class GameClient:
             raise RuntimeError("Client is not connected.")
         protocol.send_msg(self.sock, protocol.OP_START_MATCH, b"start", cipher=self.cipher)
 
-    def move_player(self, direction=None, dx=None, dy=None, action=None, facing=None):
+    def move_player(self, direction=None, dx=None, dy=None, action=None, facing=None, x=None, y=None):
         if not self.connected:
             raise RuntimeError("Client is not connected.")
 
         if action is not None:
-            payload = json.dumps({
-                "action": action,
-                "facing": facing or "RIGHT",
-            }).encode("utf-8")
+            if action != "slam":
+                raise ValueError(f"Unsupported UDP gameplay action: {action}")
+            self._send_udp({"type": "slam", "facing": facing or "RIGHT"}, reliable=True)
+        elif x is not None and y is not None:
+            now = time.monotonic()
+            if now - self.last_move_sent < 0.05:
+                return
+            self.last_move_sent = now
+            self._send_udp({"type": "move", "x": x, "y": y, "facing": facing})
         elif direction is not None:
-            payload = direction.encode("utf-8")
+            self._send_udp({"type": "move", "direction": direction.upper(), "facing": facing})
         else:
-            payload = json.dumps({
+            self._send_udp({
+                "type": "move",
                 "dx": float(dx or 0.0),
                 "dy": float(dy or 0.0),
-            }).encode("utf-8")
-
-        protocol.send_msg(self.sock, protocol.OP_MOVE_PLAYER, payload, cipher=self.cipher)
+                "facing": facing,
+            })
 
     def send_chat(self, message):
         if not self.connected:
@@ -219,6 +353,7 @@ class GameClient:
     def disconnect(self):
         self.running = False
         self.connected = False
+        self._stop_udp()
 
         if self.sock is not None:
             try:

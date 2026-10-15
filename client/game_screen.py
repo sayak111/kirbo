@@ -47,12 +47,17 @@ def update_player(game_state, local_player_id, client, dt):
             player["facing"] = "DOWN"
         else:
             player["facing"] = "UP"
-        if client and client.connected:
-            client.move_player(dx=dx, dy=dy)
 
     player_size = tile_size - 12
     player["x"] = max(0, min(player["x"], cols * tile_size - player_size))
     player["y"] = max(0, min(player["y"], len(grid) * tile_size - player_size))
+
+    if (move_x or move_y) and client and client.connected:
+        client.move_player(
+            x=player["x"],
+            y=player["y"],
+            facing=player.get("facing", "RIGHT"),
+        )
 
 
 def draw(screen, game_state, game_renderer, fonts, countdown_text, result_banner_text, result_banner_until, status_msg):
