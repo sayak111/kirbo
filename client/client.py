@@ -6,6 +6,7 @@ import time
 
 from cryptography.exceptions import InvalidTag
 
+from lib.avatar import validate_avatar
 from lib.config import SERVER_HOST, SERVER_PORT
 from lib import protocol
 from lib import security
@@ -265,6 +266,12 @@ class GameClient:
                 elif opcode == protocol.OP_REPLAY_RESPONSE:
                     self._emit("replay_response", self._safe_json_load(payload))
 
+                elif opcode == protocol.OP_AVATAR_GENERATE_RESP:
+                    self._emit("avatar_generated", self._safe_json_load(payload))
+
+                elif opcode == protocol.OP_AVATAR_SET_RESP:
+                    self._emit("avatar_saved", self._safe_json_load(payload))
+
                 elif opcode == protocol.OP_ERROR:
                     self._emit("error", {"message": payload.decode("utf-8", errors="ignore")})
 
@@ -294,6 +301,18 @@ class GameClient:
             raise RuntimeError("Client is not connected.")
         payload = json.dumps({"username": username, "password": password}).encode("utf-8")
         protocol.send_msg(self.sock, protocol.OP_LOGIN, payload, cipher=self.cipher)
+
+    def generate_avatar(self, description):
+        if not self.connected:
+            raise RuntimeError("Client is not connected.")
+        payload = json.dumps({"description": description}).encode("utf-8")
+        protocol.send_msg(self.sock, protocol.OP_AVATAR_GENERATE, payload, cipher=self.cipher)
+
+    def save_avatar(self, rows):
+        if not self.connected:
+            raise RuntimeError("Client is not connected.")
+        payload = json.dumps({"rows": validate_avatar(rows)}).encode("utf-8")
+        protocol.send_msg(self.sock, protocol.OP_AVATAR_SET, payload, cipher=self.cipher)
 
     def create_lobby(self, username=None):
         if not self.connected:

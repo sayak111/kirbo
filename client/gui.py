@@ -1,11 +1,21 @@
 import pygame
 
+from client import avatar_screen
+from client.avatar_screen import (
+    BACK_RECT as rect_avatar_back,
+    GENERATE_RECT as rect_avatar_generate,
+    PALETTE_RECTS,
+    PROMPT_RECT as rect_avatar_prompt,
+    SAVE_RECT as rect_avatar_save,
+    grid_cell_at,
+)
 from client.client import GameClient
 from client.game_renderer import ClientGameRenderer
 from client.game_screen import draw as draw_game, merge_authoritative_state, update_player
 from client.lobby_screen import (
     MODE_LOGIN,
     MODE_REGISTER,
+    rect_btn_avatar,
     STATE_AUTH,
     STATE_LOBBY,
     draw as draw_lobby,
@@ -20,9 +30,11 @@ from client.lobby_screen import (
     rect_tab_reg,
     rect_user_input,
 )
+from lib.avatar import DEFAULT_AVATAR, validate_avatar
 
 STATE_GAME = "GAME"
 STATE_REPLAY = "REPLAY"
+STATE_AVATAR = "AVATAR"
 running = True
 current_state = STATE_AUTH
 auth_mode = MODE_LOGIN
@@ -46,6 +58,9 @@ replay_frames = []
 replay_index = 0
 replay_started_at = 0
 replay_paused = False
+avatar_grid = [list(row) for row in DEFAULT_AVATAR]
+avatar_color = 1
+avatar_prompt = ""
 
 
 def on_client_event(event, payload):
@@ -53,6 +68,7 @@ def on_client_event(event, payload):
     global game_state, local_player_id, countdown_text, countdown_until
     global result_banner_text, result_banner_until
     global replay_frames, replay_index, replay_started_at, replay_paused
+    global avatar_grid, status_msg
 
     if event == "connected":
         status_msg = "Connected securely!"
@@ -62,6 +78,7 @@ def on_client_event(event, payload):
         data = payload or {}
         if data.get("success"):
             user_data.update(data.get("user", {"username": input_user_text}))
+            avatar_grid = [list(row) for row in user_data.get("avatar", DEFAULT_AVATAR)]
             status_msg = f"Welcome, {user_data.get('username', 'Player')}!"
             current_state = STATE_LOBBY
         else:
@@ -71,6 +88,24 @@ def on_client_event(event, payload):
         is_host = payload.get("is_host", False)
         local_player_id = payload.get("player_id")
         status_msg = payload.get("message", f"In Room #{current_lobby_id}")
+    elif event == "avatar_generated":
+        if payload.get("success"):
+            try:
+                avatar_grid = [list(row) for row in validate_avatar(payload.get("rows"))]
+                status_msg = "AI avatar ready. Review it and save."
+            except ValueError as exc:
+                status_msg = str(exc)
+        else:
+            status_msg = payload.get("message", "Avatar generation failed.")
+    elif event == "avatar_saved":
+        if payload.get("success"):
+            rows = validate_avatar(payload.get("rows"))
+            user_data["avatar"] = rows
+            avatar_grid = [list(row) for row in rows]
+            status_msg = "Avatar saved."
+            current_state = STATE_LOBBY
+        else:
+            status_msg = payload.get("message", "Could not save avatar.")
     elif event == "chat_message":
         status_msg = f"Room Event: {payload.get('message', '')}"
     elif event == "match_started":
@@ -138,8 +173,19 @@ def _screen_state():
     }
 
 
-def _handle_mouse(pos):
-    global auth_mode, active_input, status_msg
+def _avatar_screen_state():
+    return {
+        "avatar_grid": avatar_grid,
+        "avatar_color": avatar_color,
+        "avatar_prompt": avatar_prompt,
+        "active_input": active_input,
+        "status_msg": status_msg,
+    }
+
+
+def _handle_mouse(pos, button=1):
+    global auth_mode, active_input, status_msg, current_state
+    global avatar_grid, avatar_color, avatar_prompt
 
     if current_state == STATE_AUTH:
         if rect_tab_login.collidepoint(pos):
@@ -160,7 +206,13 @@ def _handle_mouse(pos):
                 client.register(input_user_text, input_pass_text)
     elif current_state == STATE_LOBBY:
         active_input = "lobby" if rect_lobby_input.collidepoint(pos) else None
-        if rect_btn_create_lobby.collidepoint(pos) and client.connected:
+        if rect_btn_avatar.collidepoint(pos):
+            avatar_grid = [list(row) for row in user_data.get("avatar", DEFAULT_AVATAR)]
+            avatar_prompt = ""
+            avatar_color = 1
+            active_input = None
+            current_state = STATE_AVATAR
+        elif rect_btn_create_lobby.collidepoint(pos) and client.connected:
             status_msg = "Requesting new lobby..."
             client.create_lobby(user_data.get("username", "Player"))
         elif rect_btn_join_lobby.collidepoint(pos) and client.connected and input_lobby_text.strip():
@@ -172,12 +224,36 @@ def _handle_mouse(pos):
         elif rect_btn_replay.collidepoint(pos) and client.connected:
             status_msg = "Loading latest replay..."
             client.request_replays()
+    elif current_state == STATE_AVATAR:
+        active_input = "avatar_prompt" if rect_avatar_prompt.collidepoint(pos) else None
+        cell = grid_cell_at(pos)
+        if cell and button in (1, 3):
+            row, col = cell
+            avatar_grid[row][col] = str(avatar_color if button == 1 else 0)
+        elif button == 1:
+            selected = next((index for index, rect in enumerate(PALETTE_RECTS) if rect.collidepoint(pos)), None)
+            if selected is not None:
+                avatar_color = selected
+            elif rect_avatar_generate.collidepoint(pos):
+                if avatar_prompt.strip() and client.connected:
+                    status_msg = "Generating pixel art..."
+                    client.generate_avatar(avatar_prompt)
+                else:
+                    status_msg = "Connect and describe a character first."
+            elif rect_avatar_save.collidepoint(pos):
+                if client.connected:
+                    status_msg = "Saving avatar..."
+                    client.save_avatar(["".join(row) for row in avatar_grid])
+            elif rect_avatar_back.collidepoint(pos):
+                active_input = None
+                current_state = STATE_LOBBY
 
 
 def _handle_key(event):
     global input_user_text, input_pass_text, input_lobby_text
     global current_state, active_input, game_state, status_msg
     global replay_paused, replay_index, replay_started_at
+    global avatar_prompt
 
     if current_state == STATE_AUTH:
         if active_input == "user":
@@ -195,6 +271,11 @@ def _handle_key(event):
             input_lobby_text = input_lobby_text[:-1]
         elif event.key not in (pygame.K_RETURN, pygame.K_TAB):
             input_lobby_text += event.unicode.upper()
+    elif current_state == STATE_AVATAR and active_input == "avatar_prompt":
+        if event.key == pygame.K_BACKSPACE:
+            avatar_prompt = avatar_prompt[:-1]
+        elif event.key not in (pygame.K_RETURN, pygame.K_TAB) and event.unicode.isprintable() and len(avatar_prompt) < 240:
+            avatar_prompt += event.unicode
     elif current_state == STATE_GAME and event.key == pygame.K_SPACE:
         players = game_state.get("players", {}) if game_state else {}
         player = players.get(local_player_id) if local_player_id else None
@@ -248,7 +329,7 @@ def main():
                 running = False
                 break
             if event.type == pygame.MOUSEBUTTONDOWN:
-                _handle_mouse(event.pos)
+                _handle_mouse(event.pos, event.button)
             elif event.type == pygame.KEYDOWN:
                 _handle_key(event)
 
@@ -262,6 +343,8 @@ def main():
                     replay_index += 1
                     game_state = replay_frames[replay_index].get("game_state")
             draw_game(screen, game_state, game_renderer, fonts, None, None, 0, status_msg)
+        elif current_state == STATE_AVATAR:
+            avatar_screen.draw(screen, _avatar_screen_state(), fonts)
         else:
             draw_lobby(screen, _screen_state(), fonts)
 

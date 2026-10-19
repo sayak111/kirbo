@@ -4,6 +4,8 @@ import json
 import os
 from contextlib import contextmanager
 
+from lib.avatar import decode_avatar, validate_avatar
+
 DB_FILE = "game_database.db"
 
 
@@ -32,6 +34,10 @@ def init_db():
                 losses INTEGER DEFAULT 0
             )
         """)
+        cursor.execute("PRAGMA table_info(users)")
+        user_columns = {row[1] for row in cursor.fetchall()}
+        if "avatar" not in user_columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN avatar TEXT NOT NULL DEFAULT ''")
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS match_history (
                 match_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -111,13 +117,13 @@ def authenticate_user(username: str, password: str) -> tuple[bool, dict | str]:
     """אימות התחברות (Login) של משתמש"""
     with _db_connection() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT password_hash, salt, score, wins, losses FROM users WHERE username = ?", (username,))
+        cursor.execute("SELECT password_hash, salt, score, wins, losses, avatar FROM users WHERE username = ?", (username,))
         row = cursor.fetchone()
 
     if not row:
         return False, "User not found"
 
-    stored_hash, salt, score, wins, losses = row
+    stored_hash, salt, score, wins, losses, avatar = row
     computed_hash, _ = hash_password(password, salt)
 
     if stored_hash == computed_hash:
@@ -125,11 +131,23 @@ def authenticate_user(username: str, password: str) -> tuple[bool, dict | str]:
             "username": username,
             "score": score,
             "wins": wins,
-            "losses": losses
+            "losses": losses,
+            "avatar": decode_avatar(avatar),
         }
         return True, user_data
     else:
         return False, "Invalid password"
+
+
+def update_user_avatar(username: str, avatar) -> bool:
+    rows = validate_avatar(avatar)
+    with _db_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE users SET avatar = ? WHERE username = ?",
+            (json.dumps(rows), username),
+        )
+        return cursor.rowcount == 1
 
 
 def update_user_stats(username: str, won: bool, score_delta: int):

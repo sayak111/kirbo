@@ -1,5 +1,7 @@
 import pygame
 
+from client.avatar_art import make_avatar_surface
+
 
 class ClientGameRenderer:
     def __init__(self, tile_size=44):
@@ -21,6 +23,7 @@ class ClientGameRenderer:
             (251, 146, 60),
             (244, 114, 182),
         ]
+        self.avatar_cache = {}
 
     def draw(self, screen, game_state, font_title, font_body, font_sm):
         screen.fill(self.colors["bg"])
@@ -86,8 +89,23 @@ class ClientGameRenderer:
             rect = pygame.Rect(x, y, size, size)
 
             color = player_color if is_alive else (239, 68, 68)
-            pygame.draw.ellipse(screen, color, rect)
-            pygame.draw.ellipse(screen, self.colors["player_outline"], rect, 2)
+            avatar_rows = player.get("avatar")
+            if avatar_rows:
+                try:
+                    cache_key = tuple(avatar_rows)
+                    avatar_surface = self.avatar_cache.get(cache_key)
+                    if avatar_surface is None:
+                        avatar_surface = make_avatar_surface(avatar_rows, 2)
+                        if avatar_surface.get_size() != rect.size:
+                            avatar_surface = pygame.transform.scale(avatar_surface, rect.size)
+                        self.avatar_cache[cache_key] = avatar_surface
+                    screen.blit(avatar_surface, rect.topleft)
+                except (TypeError, ValueError):
+                    pygame.draw.ellipse(screen, color, rect)
+                    pygame.draw.ellipse(screen, self.colors["player_outline"], rect, 2)
+            else:
+                pygame.draw.ellipse(screen, color, rect)
+                pygame.draw.ellipse(screen, self.colors["player_outline"], rect, 2)
 
             label = font_sm.render(f"{player_id}", True, self.colors["text"])
             screen.blit(label, (x, y - 18))

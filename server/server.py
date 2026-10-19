@@ -9,10 +9,12 @@ import uuid
 
 from cryptography.exceptions import InvalidTag
 
+from lib.avatar import DEFAULT_AVATAR, decode_avatar, validate_avatar
 from lib import db_manager
 from lib import protocol
 from lib import security
 from lib.config import SERVER_BIND_HOST, SERVER_PORT
+from server.avatar_service import generate_avatar
 from server.game import Game
 
 
@@ -27,13 +29,14 @@ class Lobby:
         self.match_thread = None
         self.client_ids = {}
         self.client_usernames = {}
+        self.client_avatars = {}
         self.host_socket = None
         self.replay_id = None
         self.replay_started_at = None
         self.replay_frame_number = 0
         self.replay_last_frame_at = 0.0
 
-    def add_client(self, client_socket, cipher, username=None):
+    def add_client(self, client_socket, cipher, username=None, avatar=None):
         with self.lock:
             if client_socket in self.clients:
                 return True
@@ -50,6 +53,7 @@ class Lobby:
 
             if username:
                 self.client_usernames[client_socket] = username
+            self.client_avatars[client_socket] = decode_avatar(avatar or DEFAULT_AVATAR)
 
             if self.host_socket is None:
                 self.host_socket = client_socket
@@ -61,6 +65,7 @@ class Lobby:
                 del self.clients[client_socket]
 
             self.client_usernames.pop(client_socket, None)
+            self.client_avatars.pop(client_socket, None)
 
             player_id = self.client_ids.pop(client_socket, None)
             if player_id and self.game is not None:
@@ -224,6 +229,10 @@ class Lobby:
             if self.game is None:
                 return
             game_state = self.game.serialize_state()
+            for client_socket, player_id in self.client_ids.items():
+                player = game_state["players"].get(player_id)
+                if player is not None:
+                    player["avatar"] = self.client_avatars.get(client_socket, list(DEFAULT_AVATAR))
             now = time.monotonic()
             if self.replay_id is not None and self.replay_started_at is not None:
                 if self.replay_frame_number == 0 or now - self.replay_last_frame_at >= 0.2:
@@ -449,6 +458,7 @@ def handle_client(client_sock, client_addr, server_dh_params):
     cipher = None
     current_lobby = None
     client_username = None
+    client_avatar = list(DEFAULT_AVATAR)
     udp_token = secrets.token_hex(32)
 
     try:
@@ -498,6 +508,7 @@ def handle_client(client_sock, client_addr, server_dh_params):
                 success, user_info_or_msg = db_manager.authenticate_user(username, password)
                 if success:
                     client_username = username
+                    client_avatar = user_info_or_msg.get("avatar", list(DEFAULT_AVATAR))
                     res_payload = json.dumps({
                         "success": True,
                         "message": "Login successful!",
@@ -511,10 +522,51 @@ def handle_client(client_sock, client_addr, server_dh_params):
 
                 protocol.send_msg(client_sock, protocol.OP_LOGIN_RESP, res_payload, cipher=cipher)
 
+            elif opcode == protocol.OP_AVATAR_GENERATE:
+                try:
+                    data = json.loads(payload.decode("utf-8"))
+                    if not isinstance(data, dict):
+                        raise ValueError("Invalid avatar generation request.")
+                    if not client_username:
+                        raise ValueError("Log in before generating an avatar.")
+                    rows = generate_avatar(data.get("description", ""))
+                    response = {"success": True, "rows": rows}
+                except (json.JSONDecodeError, ValueError, RuntimeError) as exc:
+                    response = {"success": False, "message": str(exc)}
+                protocol.send_msg(
+                    client_sock,
+                    protocol.OP_AVATAR_GENERATE_RESP,
+                    json.dumps(response).encode("utf-8"),
+                    cipher=cipher,
+                )
+
+            elif opcode == protocol.OP_AVATAR_SET:
+                try:
+                    data = json.loads(payload.decode("utf-8"))
+                    if not isinstance(data, dict):
+                        raise ValueError("Invalid avatar save request.")
+                    if not client_username:
+                        raise ValueError("Log in before saving an avatar.")
+                    rows = validate_avatar(data.get("rows"))
+                    if not db_manager.update_user_avatar(client_username, rows):
+                        raise ValueError("Could not save the avatar.")
+                    client_avatar = rows
+                    if current_lobby is not None:
+                        current_lobby.client_avatars[client_sock] = rows
+                    response = {"success": True, "rows": rows}
+                except (json.JSONDecodeError, ValueError) as exc:
+                    response = {"success": False, "message": str(exc)}
+                protocol.send_msg(
+                    client_sock,
+                    protocol.OP_AVATAR_SET_RESP,
+                    json.dumps(response).encode("utf-8"),
+                    cipher=cipher,
+                )
+
             elif opcode == protocol.OP_CREATE_LOBBY:
                 lobby_id = str(uuid.uuid4())[:6].upper()
                 new_lobby = Lobby(lobby_id)
-                if not new_lobby.add_client(client_sock, cipher, username=client_username):
+                if not new_lobby.add_client(client_sock, cipher, username=client_username, avatar=client_avatar):
                     protocol.send_msg(client_sock, protocol.OP_ERROR, b"Lobby is full!", cipher=cipher)
                     client_sock.close()
                     return
@@ -535,7 +587,7 @@ def handle_client(client_sock, client_addr, server_dh_params):
                     target_lobby = LOBBIES.get(target_id)
 
                 if target_lobby:
-                    if not target_lobby.add_client(client_sock, cipher, username=client_username):
+                    if not target_lobby.add_client(client_sock, cipher, username=client_username, avatar=client_avatar):
                         protocol.send_msg(client_sock, protocol.OP_ERROR, b"Lobby is full!", cipher=cipher)
                         continue
 
