@@ -12,6 +12,7 @@ from cryptography.exceptions import InvalidTag
 from lib import db_manager
 from lib import protocol
 from lib import security
+from lib.config import SERVER_BIND_HOST, SERVER_PORT
 from server.game import Game
 
 
@@ -626,8 +627,8 @@ def main():
     server_dh_params = dh_master.parameters
     print("[SERVER] DH Parameters ready. Starting server socket...")
 
-    HOST = "0.0.0.0"
-    PORT = 3000
+    HOST = SERVER_BIND_HOST
+    PORT = SERVER_PORT
 
     server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

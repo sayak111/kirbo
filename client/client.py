@@ -6,12 +6,13 @@ import time
 
 from cryptography.exceptions import InvalidTag
 
+from lib.config import SERVER_HOST, SERVER_PORT
 from lib import protocol
 from lib import security
 
 
 class GameClient:
-    def __init__(self, host="10.32.143.15", port=3000, on_event=None):
+    def __init__(self, host=SERVER_HOST, port=SERVER_PORT, on_event=None):
         self.host = host
         self.port = port
         self.on_event = on_event or self._default_event_handler

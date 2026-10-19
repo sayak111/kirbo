@@ -24,3 +24,6 @@ Thumbs.db
 *.pem
 *.key
 game_database.db
+.env
+.env.*
+!.env.example
