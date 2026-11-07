@@ -533,6 +533,12 @@ def handle_client(client_sock, client_addr, server_dh_params):
                     response = {"success": True, "rows": rows}
                 except (json.JSONDecodeError, ValueError, RuntimeError) as exc:
                     response = {"success": False, "message": str(exc)}
+                except Exception as exc:
+                    print(f"[AVATAR GENERATION ERROR] {client_addr}: {exc}")
+                    response = {
+                        "success": False,
+                        "message": f"Avatar generation failed unexpectedly: {exc}",
+                    }
                 protocol.send_msg(
                     client_sock,
                     protocol.OP_AVATAR_GENERATE_RESP,

@@ -91,7 +91,22 @@ def draw(screen, state, fonts):
     _draw_button(screen, font_sm, BACK_RECT, "BACK", COLOR_BORDER)
 
     status = state.get("status_msg", "")
-    screen.blit(font_sm.render(status[:52], True, COLOR_MUTED), (415, 480))
+    status_lines = [""]
+    for character in status:
+        if character == "\n":
+            status_lines.append("")
+        elif status_lines[-1] and font_sm.size(status_lines[-1] + character)[0] > 345:
+            status_lines.append(character if not character.isspace() else "")
+        else:
+            status_lines[-1] += character
+    if len(status_lines) > 6:
+        status_lines = status_lines[:6]
+        last_line = status_lines[-1].rstrip()
+        while last_line and font_sm.size(last_line + "...")[0] > 345:
+            last_line = last_line[:-1]
+        status_lines[-1] = last_line + "..."
+    for line_index, line in enumerate(status_lines):
+        screen.blit(font_sm.render(line, True, COLOR_MUTED), (415, 480 + line_index * 18))
     pygame.display.flip()
 
 

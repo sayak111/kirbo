@@ -1,3 +1,4 @@
 cryptography
 pygame
 python-dotenv
+google-genai
