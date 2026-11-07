@@ -1,5 +1,7 @@
 import pygame
 
+from client.avatar_art import make_avatar_surface
+
 WINDOW_WIDTH = 800
 WINDOW_HEIGHT = 600
 
@@ -27,6 +29,7 @@ rect_lobby_input = pygame.Rect(60, 330, 280, 40)
 rect_btn_join_lobby = pygame.Rect(60, 385, 280, 45)
 rect_btn_start_game = pygame.Rect(420, 245, 230, 45)
 rect_btn_replay = pygame.Rect(420, 385, 230, 45)
+rect_btn_avatar = pygame.Rect(580, 30, 180, 42)
 
 
 def draw(screen, state, fonts):
@@ -81,7 +84,19 @@ def _draw_auth(screen, state, font_title, font_body):
 def _draw_lobby(screen, state, font_title, font_body, font_sm):
     user_data = state["user_data"]
     username = user_data.get("username", "Player")
-    screen.blit(font_title.render(f"Welcome, {username}", True, COLOR_TEXT), (40, 40))
+    welcome = f"Welcome, {username}"
+    while font_title.size(welcome)[0] > 455 and len(username) > 8:
+        username = username[:-4] + "..."
+        welcome = f"Welcome, {username}"
+    screen.blit(font_title.render(welcome, True, COLOR_TEXT), (40, 40))
+
+    avatar_rows = user_data.get("avatar")
+    if avatar_rows:
+        avatar_surface = make_avatar_surface(avatar_rows, 2)
+        screen.blit(avatar_surface, (536, 29))
+    pygame.draw.rect(screen, COLOR_BORDER, rect_btn_avatar, border_radius=6)
+    avatar_label = font_sm.render("EDIT AVATAR", True, COLOR_TEXT)
+    screen.blit(avatar_label, avatar_label.get_rect(center=rect_btn_avatar.center))
 
     card_left = pygame.Rect(40, 100, 320, 430)
     pygame.draw.rect(screen, COLOR_CARD, card_left, border_radius=12)
